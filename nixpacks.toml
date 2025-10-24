@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["nodejs", "python310", "playwright-driver"]
+
+[phases.install]
+cmds = [
+  "npm install",
+  "pip install -r requirements.txt",
+  "npx playwright install chromium"
+]
+
+[start]
+cmd = "node server.js"
