@@ -118,7 +118,7 @@ export async function scrapeProperty(query) {
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query} (${queryType})`);
     
-    // Step 1: Create BrowserBase session
+    // Step 1: Create BrowserBase session with proxy to avoid blocking
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
@@ -126,7 +126,8 @@ export async function scrapeProperty(query) {
         'X-BB-API-Key': BROWSERBASE_API_KEY
       },
       body: JSON.stringify({
-        projectId: BROWSERBASE_PROJECT_ID
+        projectId: BROWSERBASE_PROJECT_ID,
+        proxies: true // Enable BrowserBase's residential proxies
       })
     });
 
