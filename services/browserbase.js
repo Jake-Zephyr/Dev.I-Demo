@@ -3,7 +3,7 @@ import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
-const CITYPLAN_URL = "https://cityplan.goldcoast.qld.gov.au/eplan/";
+const CITYPLAN_URL = "https://cityplan.goldcoast.qld.gov.au/city-plan/map/";
 
 if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
   console.error('⚠️  Missing BrowserBase credentials in environment variables');
