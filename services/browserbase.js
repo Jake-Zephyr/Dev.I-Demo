@@ -67,21 +67,28 @@ async function extractAreaAndLotplan(page) {
 function extractZoneDensityOverlays(panelText) {
   // Extract zone
   const zoneMatch = panelText.match(
-    /(Low density residential|Low-medium density residential|Medium density residential|High density residential)/i
+    /(Low density residential|Low-medium density residential|Medium density residential|High density residential|High impact industry|Low impact industry|Medium impact industry|Community facilities|Major centre|District centre|Neighbourhood centre|Rural|Rural residential|Environmental management and conservation|Open space|Special purpose|Sport and recreation|Tourist accommodation)/i
   );
   const zone = zoneMatch ? zoneMatch[1] : null;
   
-  // Extract density
-  const densityMatch = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
-  const density = densityMatch ? densityMatch[1] : null;
+  // Extract density - try multiple patterns
+  let density = null;
+  const densityMatch1 = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
+  const densityMatch2 = panelText.match(/\b(RD\d+)\b/); // Just find RD followed by numbers
+  
+  if (densityMatch1) {
+    density = densityMatch1[1];
+  } else if (densityMatch2) {
+    density = densityMatch2[1];
+  }
   
   // Extract overlays
   const overlays = [];
-  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government|Plan Zone|$)/is);
+  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government Infrastructure Plan|Plan Zone|$)/is);
   if (overlayMatch) {
     const overlayText = overlayMatch[1];
     const lines = overlayText.split('\n').map(ln => ln.trim()).filter(ln => ln);
-    const exclude = ["view section", "show on map", "overlays"];
+    const exclude = ["view section", "show on map", "overlays", "powered by", "map and location", "map tools", "map layers"];
     
     for (const ln of lines) {
       if (exclude.some(ex => ln.toLowerCase().includes(ex))) continue;
@@ -289,17 +296,18 @@ export async function scrapeProperty(query) {
     // Step 10: Extract address if lotplan search
     if (queryType === "lotplan") {
       const addressMatch = panelText.match(
-        /(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent)[,\s]+[A-Za-z\s]+)/i
+        /(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent|Boulevard|Terrace|Circuit)[,\s]+[A-Za-z\s]+)/i
       );
       if (addressMatch) {
-        result.address = addressMatch[1].trim();
+        // Clean up the address - remove any newlines or extra spaces
+        result.address = addressMatch[1].trim().replace(/\s+/g, ' ');
       }
     } else {
       result.address = cleanedQuery;
     }
     
     result.success = true;
-    console.log(`[BROWSERBASE] Scraping complete!`);
+    console.log(`[BROWSERBASE] Scraping complete! Found zone: ${result.zone}, overlays: ${result.overlays.length}`);
     
     // Step 11: Close browser
     await browser.close();
