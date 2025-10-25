@@ -3,7 +3,7 @@ import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
-const CITYPLAN_URL = "https://cityplan.goldcoast.qld.gov.au/city-plan/map/";
+const CITYPLAN_URL = "https://cityplan.goldcoast.qld.gov.au/eplan/";
 
 if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
   console.error('⚠️  Missing BrowserBase credentials in environment variables');
@@ -118,7 +118,7 @@ export async function scrapeProperty(query) {
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query} (${queryType})`);
     
-    // Step 1: Create BrowserBase session with proxy to avoid blocking
+    // Step 1: Create BrowserBase session with proxy and stealth to avoid blocking
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
@@ -127,7 +127,15 @@ export async function scrapeProperty(query) {
       },
       body: JSON.stringify({
         projectId: BROWSERBASE_PROJECT_ID,
-        proxies: true // Enable BrowserBase's residential proxies
+        proxies: true, // Use residential proxies
+        browserSettings: {
+          fingerprint: {
+            browsers: ['chrome'],
+            devices: ['desktop'],
+            locales: ['en-US'],
+            operatingSystems: ['windows']
+          }
+        }
       })
     });
 
@@ -147,7 +155,22 @@ export async function scrapeProperty(query) {
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
     
-    console.log(`[BROWSERBASE] Connected to remote browser`);
+    // Add stealth settings to avoid detection
+    await page.setExtraHTTPHeaders({
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'DNT': '1',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Cache-Control': 'max-age=0'
+    });
+    
+    console.log(`[BROWSERBASE] Connected to remote browser with stealth settings`);
 
     // Step 3: Navigate and wait for React app to fully load
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
