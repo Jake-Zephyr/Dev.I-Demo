@@ -149,18 +149,30 @@ export async function scrapeProperty(query) {
     
     console.log(`[BROWSERBASE] Connected to remote browser`);
 
-    // Step 3: Navigate to Gold Coast City Plan with extended timeout for proxy
+    // Step 3: Navigate and wait for React app to fully load
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
     await page.goto(CITYPLAN_URL, { 
-      waitUntil: 'domcontentloaded', 
+      waitUntil: 'networkidle', // Wait for ALL network requests to finish
       timeout: 90000
     });
     
-    // Wait for React app to fully load
-    console.log(`[BROWSERBASE] Waiting for app to initialize...`);
-    await page.waitForTimeout(8000); // Increased wait for React app
+    // Wait for the loading screen to disappear
+    console.log(`[BROWSERBASE] Waiting for loading screen to disappear...`);
+    try {
+      await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 });
+      console.log(`[BROWSERBASE] Loading screen gone!`);
+    } catch (e) {
+      console.log(`[BROWSERBASE] Loading screen timeout, proceeding anyway...`);
+    }
     
-    console.log(`[BROWSERBASE] Page loaded, searching for ${cleanedQuery}...`);
+    // Wait for search box to appear (proves app loaded)
+    console.log(`[BROWSERBASE] Waiting for search box...`);
+    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
+      state: 'visible', 
+      timeout: 30000 
+    });
+    
+    console.log(`[BROWSERBASE] App fully loaded! Searching for ${cleanedQuery}...`);
 
     // Step 4: Handle search based on query type
     if (queryType === "lotplan") {
@@ -332,8 +344,25 @@ export async function scrapePropertyDebug(query) {
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
     
-    await page.goto(CITYPLAN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    console.log(`[DEBUG] Navigating to ${CITYPLAN_URL}...`);
+    await page.goto(CITYPLAN_URL, { waitUntil: 'networkidle', timeout: 90000 });
+    
+    console.log(`[DEBUG] Waiting for loading screen to disappear...`);
+    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
+      console.log(`[DEBUG] Loading screen timeout`);
+    });
+    
+    console.log(`[DEBUG] Waiting for search box...`);
+    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
+      state: 'visible', 
+      timeout: 30000 
+    }).catch(() => {
+      console.log(`[DEBUG] Search box not found`);
+    });
+    
     await page.waitForTimeout(5000);
+    
+    console.log(`[DEBUG] Extracting page data...`);
     
     const title = await page.title();
     const url = page.url();
