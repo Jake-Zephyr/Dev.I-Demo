@@ -37,6 +37,61 @@ app.get('/api/scrape/:query', async (req, res) => {
   }
 });
 
+// Debug endpoint - returns raw scraped text
+app.get('/api/scrape-debug/:query', async (req, res) => {
+  try {
+    const { query } = req.params;
+    console.log(`[SCRAPE-DEBUG] Query: ${query}`);
+    
+    // Import the test version that returns raw text
+    const { scrapePropertyDebug } = await import('./services/browserbase.js');
+    const data = await scrapePropertyDebug(query);
+    
+    res.json({
+      success: true,
+      debug: data
+    });
+  } catch (error) {
+    console.error('[SCRAPE-DEBUG ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test BrowserBase connection (debugging endpoint)
+app.get('/api/test-browserbase', async (req, res) => {
+  try {
+    console.log('[TEST] Testing BrowserBase connection...');
+    
+    const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-BB-API-Key': process.env.BROWSERBASE_API_KEY
+      },
+      body: JSON.stringify({
+        projectId: process.env.BROWSERBASE_PROJECT_ID,
+        proxies: true
+      })
+    });
+
+    const result = await sessionResponse.json();
+    
+    res.json({
+      success: sessionResponse.ok,
+      status: sessionResponse.status,
+      result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Main advisory endpoint (Claude + Scraper)
 app.post('/api/advise', async (req, res) => {
   try {
