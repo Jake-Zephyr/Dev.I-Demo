@@ -149,10 +149,13 @@ export async function scrapeProperty(query) {
     
     console.log(`[BROWSERBASE] Connected to remote browser`);
 
-    // Step 3: Navigate to Gold Coast City Plan
+    // Step 3: Navigate to Gold Coast City Plan with extended timeout for proxy
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
-    await page.goto(CITYPLAN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(CITYPLAN_URL, { 
+      waitUntil: 'domcontentloaded', 
+      timeout: 90000 // Increased to 90 seconds for proxy
+    });
+    await page.waitForTimeout(3000);
     
     console.log(`[BROWSERBASE] Page loaded, searching for ${cleanedQuery}...`);
 
@@ -193,18 +196,41 @@ export async function scrapeProperty(query) {
     result.area_sqm = area;
     result.lot_plan = lotplan;
     
-    // Step 7: Wait for zone info to appear
-    await page.waitForSelector(
-      "text=/Medium density residential|Low density residential|High density residential/i",
-      { timeout: 10000 }
-    );
-    await page.waitForTimeout(2000);
+    // Step 7: Wait for zone info to appear (increased timeout)
+    console.log(`[BROWSERBASE] Waiting for zone information...`);
+    let zoneFound = false;
+    try {
+      await page.waitForSelector(
+        "text=/Medium density residential|Low density residential|High density residential/i",
+        { timeout: 30000 } // Increased to 30 seconds
+      );
+      zoneFound = true;
+      console.log(`[BROWSERBASE] Zone information found!`);
+    } catch (e) {
+      console.log(`[BROWSERBASE] Zone selector timeout, trying to extract from current page...`);
+      // Continue anyway - we might still get data from text extraction
+    }
+    
+    // Give it a bit more time if zone was found
+    if (zoneFound) {
+      await page.waitForTimeout(2000);
+    } else {
+      await page.waitForTimeout(5000); // Wait longer if zone didn't appear
+    }
     
     // Step 8: Extract all text from page
+    console.log(`[BROWSERBASE] Extracting page text...`);
     const panelText = await page.locator("body").innerText();
+    console.log(`[BROWSERBASE] Extracted ${panelText.length} characters of text`);
+    console.log(`[BROWSERBASE] First 500 chars: ${panelText.substring(0, 500)}`);
     
     // Step 9: Extract zone, density, overlays
     const extracted = extractZoneDensityOverlays(panelText);
+    console.log(`[BROWSERBASE] Parsed data:`, {
+      zone: extracted.zone,
+      density: extracted.density,
+      overlays: extracted.overlays.length
+    });
     result.zone = extracted.zone;
     result.residential_density = extracted.density;
     result.overlays = extracted.overlays;
