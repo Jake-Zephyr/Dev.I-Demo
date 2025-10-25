@@ -10,13 +10,14 @@ const anthropic = new Anthropic({
  * Get planning advisory from Claude with function calling
  * Claude will automatically call the scraper when needed
  */
-export async function getAdvisory(userQuery) {
+export async function getAdvisory(userQuery, conversationHistory = []) {
   try {
     console.log('=====================================');
     console.log('[CLAUDE] New advisory request');
     console.log('[CLAUDE] User query:', userQuery);
     console.log('[CLAUDE] Query type:', typeof userQuery);
     console.log('[CLAUDE] Query length:', userQuery?.length);
+    console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
     console.log('=====================================');
 
     // Define the tool for property lookup
@@ -35,15 +36,21 @@ export async function getAdvisory(userQuery) {
       }
     }];
 
-    // Initial request to Claude
-    console.log('[CLAUDE] Sending request to Anthropic API...');
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      tools,
-      messages: [{
-        role: 'user',
-        content: `You are Dev.I, an AI assistant specializing in Gold Coast property development and planning.
+    // Build messages array with conversation history
+    const messages = [];
+    
+    // Add conversation history if provided
+    if (conversationHistory && conversationHistory.length > 0) {
+      console.log('[CLAUDE] Adding conversation history...');
+      // Take last 10 messages to avoid token limits
+      const recentHistory = conversationHistory.slice(-10);
+      messages.push(...recentHistory);
+    }
+    
+    // Add current user query
+    messages.push({
+      role: 'user',
+      content: `You are Dev.I, an AI assistant specializing in Gold Coast property development and planning.
 
 CORE EXPERTISE:
 - Gold Coast property planning, zoning, and development
@@ -64,10 +71,19 @@ RESPONSE GUIDELINES:
 3. For questions completely unrelated to property or Gold Coast: Politely redirect by saying something like:
    "I'm not sure what that has to do with property development! I specialize in Gold Coast property planning and development. Is there anything about Gold Coast properties or planning I can help you with?"
 
-Keep responses conversational and friendly, but stay focused on your expertise area.
+Keep responses conversational and friendly, but stay focused on your expertise area. Use the conversation history to provide contextual responses.
 
 User query: ${userQuery}`
-      }]
+    });
+
+    // Initial request to Claude
+    console.log('[CLAUDE] Sending request to Anthropic API...');
+    console.log('[CLAUDE] Messages count:', messages.length);
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4096,
+      tools,
+      messages
     });
 
     console.log('[CLAUDE] Initial response received');
@@ -139,6 +155,25 @@ User query: ${userQuery}`
 
   } catch (error) {
     console.error('[CLAUDE ERROR]', error);
+    
+    // If it's a scraping error, give a user-friendly message
+    if (error.message.includes('Scraping failed') || error.message.includes('Timeout')) {
+      return {
+        answer: "I'm having trouble accessing the Gold Coast City Plan website right now. This could be due to:\n\n" +
+                "1. The website is experiencing high traffic\n" +
+                "2. The property reference might not exist\n" +
+                "3. There's a temporary connectivity issue\n\n" +
+                "Could you try:\n" +
+                "- Double-checking the lot/plan number format (e.g., 295RP21863)\n" +
+                "- Providing the street address instead\n" +
+                "- Trying again in a moment\n\n" +
+                "I'm still here to answer general Gold Coast planning questions in the meantime!",
+        propertyData: null,
+        usedTool: false,
+        error: error.message
+      };
+    }
+    
     throw new Error(`Advisory generation failed: ${error.message}`);
   }
 }
