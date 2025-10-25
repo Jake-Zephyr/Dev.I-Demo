@@ -153,42 +153,58 @@ export async function scrapeProperty(query) {
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
     await page.goto(CITYPLAN_URL, { 
       waitUntil: 'domcontentloaded', 
-      timeout: 90000 // Increased to 90 seconds for proxy
+      timeout: 90000
     });
-    await page.waitForTimeout(3000);
+    
+    // Wait for React app to fully load
+    console.log(`[BROWSERBASE] Waiting for app to initialize...`);
+    await page.waitForTimeout(8000); // Increased wait for React app
     
     console.log(`[BROWSERBASE] Page loaded, searching for ${cleanedQuery}...`);
 
     // Step 4: Handle search based on query type
     if (queryType === "lotplan") {
       try {
+        console.log(`[BROWSERBASE] Looking for Lot on Plan dropdown...`);
         const dropdown = page.locator("select[name='selectedSearch']").first();
+        await dropdown.waitFor({ state: 'visible', timeout: 10000 });
         await dropdown.selectOption({ label: "Lot on Plan" });
-        await page.waitForTimeout(800);
+        await page.waitForTimeout(2000); // Wait for dropdown change
         
+        console.log(`[BROWSERBASE] Looking for Lot on Plan search box...`);
         const searchBox = page.locator("input[placeholder*='Lot on Plan' i]").first();
+        await searchBox.waitFor({ state: 'visible', timeout: 10000 });
         await searchBox.click();
+        await page.waitForTimeout(500);
         await searchBox.fill(cleanedQuery);
+        await page.waitForTimeout(3000); // Wait for autocomplete
       } catch (e) {
-        console.log(`[BROWSERBASE] Dropdown failed, using default search`);
+        console.log(`[BROWSERBASE] Dropdown approach failed: ${e.message}, trying default search`);
         const searchBox = page.locator("input[placeholder*='Search for an address']").first();
+        await searchBox.waitFor({ state: 'visible', timeout: 10000 });
         await searchBox.click();
+        await page.waitForTimeout(500);
         await searchBox.fill(cleanedQuery);
+        await page.waitForTimeout(3000);
       }
     } else {
+      console.log(`[BROWSERBASE] Looking for address search box...`);
       const searchBox = page.locator("input[placeholder*='Search for an address']").first();
+      await searchBox.waitFor({ state: 'visible', timeout: 10000 });
       await searchBox.click();
+      await page.waitForTimeout(500);
       await searchBox.fill(cleanedQuery);
+      await page.waitForTimeout(3000); // Wait for autocomplete
     }
     
-    await page.waitForTimeout(1500);
-    
-    // Step 5: Select first result
-    console.log(`[BROWSERBASE] Selecting result...`);
+    // Step 5: Select first result with more explicit waiting
+    console.log(`[BROWSERBASE] Selecting first result...`);
     await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1500); // Longer wait
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(5000);
+    
+    console.log(`[BROWSERBASE] Waiting for results to load...`);
+    await page.waitForTimeout(8000); // Longer wait for results
     
     // Step 6: Extract area and lot/plan
     console.log(`[BROWSERBASE] Extracting property details...`);
