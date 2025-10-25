@@ -289,3 +289,53 @@ export async function scrapeProperty(query) {
     throw new Error(`Scraping failed: ${error.message}`);
   }
 }
+
+/**
+ * Debug version - returns raw text for troubleshooting
+ */
+export async function scrapePropertyDebug(query) {
+  let browser = null;
+  
+  try {
+    const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-BB-API-Key': BROWSERBASE_API_KEY
+      },
+      body: JSON.stringify({
+        projectId: BROWSERBASE_PROJECT_ID,
+        proxies: true
+      })
+    });
+
+    const session = await sessionResponse.json();
+    const wsUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&sessionId=${session.id}`;
+    
+    browser = await chromium.connectOverCDP(wsUrl);
+    const context = browser.contexts()[0];
+    const page = context.pages()[0] || await context.newPage();
+    
+    await page.goto(CITYPLAN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.waitForTimeout(5000);
+    
+    const title = await page.title();
+    const url = page.url();
+    const bodyText = await page.locator("body").innerText();
+    const html = await page.content();
+    
+    await browser.close();
+    
+    return {
+      url,
+      title,
+      bodyTextLength: bodyText.length,
+      bodyTextPreview: bodyText.substring(0, 2000),
+      htmlLength: html.length,
+      htmlPreview: html.substring(0, 1000)
+    };
+  } catch (error) {
+    if (browser) await browser.close();
+    throw error;
+  }
+}
