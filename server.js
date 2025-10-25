@@ -102,9 +102,10 @@ app.post('/api/advise', async (req, res) => {
     console.log('[ADVISE] Body received:', JSON.stringify(req.body, null, 2));
     console.log('[ADVISE] Body type:', typeof req.body);
     console.log('[ADVISE] Query field:', req.body.query);
+    console.log('[ADVISE] History length:', req.body.conversationHistory?.length || 0);
     console.log('=====================================');
     
-    const { query } = req.body;
+    const { query, conversationHistory } = req.body;
     
     if (!query) {
       console.log('[ADVISE] ERROR: No query provided');
@@ -116,8 +117,8 @@ app.post('/api/advise', async (req, res) => {
     
     console.log(`[ADVISE] Processing query: "${query}"`);
     
-    // Get advisory from Claude (it will call scraper if needed)
-    const response = await getAdvisory(query);
+    // Get advisory from Claude with conversation history
+    const response = await getAdvisory(query, conversationHistory);
     
     console.log('[ADVISE] Response generated');
     console.log('[ADVISE] Response structure:', JSON.stringify({
