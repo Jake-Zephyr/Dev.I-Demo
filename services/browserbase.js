@@ -1,4 +1,4 @@
-// services/browserbase.js - EXACT REPLICATION OF PYTHON SCRIPT
+// services/browserbase.js - WORKING VERSION
 import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
@@ -67,28 +67,21 @@ async function extractAreaAndLotplan(page) {
 function extractZoneDensityOverlays(panelText) {
   // Extract zone
   const zoneMatch = panelText.match(
-    /(Low density residential|Low-medium density residential|Medium density residential|High density residential|High impact industry|Low impact industry|Medium impact industry|Community facilities|Major centre|District centre|Neighbourhood centre|Rural|Rural residential|Environmental management and conservation|Open space|Special purpose|Sport and recreation|Tourist accommodation)/i
+    /(Low density residential|Low-medium density residential|Medium density residential|High density residential)/i
   );
   const zone = zoneMatch ? zoneMatch[1] : null;
   
-  // Extract density - try multiple patterns
-  let density = null;
-  const densityMatch1 = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
-  const densityMatch2 = panelText.match(/\b(RD\d+)\b/); // Just find RD followed by numbers
-  
-  if (densityMatch1) {
-    density = densityMatch1[1];
-  } else if (densityMatch2) {
-    density = densityMatch2[1];
-  }
+  // Extract density
+  const densityMatch = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
+  const density = densityMatch ? densityMatch[1] : null;
   
   // Extract overlays
   const overlays = [];
-  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government Infrastructure Plan|Plan Zone|$)/is);
+  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government|Plan Zone|$)/is);
   if (overlayMatch) {
     const overlayText = overlayMatch[1];
     const lines = overlayText.split('\n').map(ln => ln.trim()).filter(ln => ln);
-    const exclude = ["view section", "show on map", "overlays", "powered by", "map and location", "map tools", "map layers"];
+    const exclude = ["view section", "show on map", "overlays"];
     
     for (const ln of lines) {
       if (exclude.some(ex => ln.toLowerCase().includes(ex))) continue;
@@ -102,7 +95,7 @@ function extractZoneDensityOverlays(panelText) {
 }
 
 /**
- * Main scraper function - replicates Python script exactly
+ * Main scraper function
  */
 export async function scrapeProperty(query) {
   let browser = null;
@@ -125,7 +118,7 @@ export async function scrapeProperty(query) {
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query} (${queryType})`);
     
-    // Step 1: Create BrowserBase session with proxy and stealth to avoid blocking
+    // Step 1: Create BrowserBase session with proxy and stealth
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
@@ -134,15 +127,7 @@ export async function scrapeProperty(query) {
       },
       body: JSON.stringify({
         projectId: BROWSERBASE_PROJECT_ID,
-        proxies: true, // Use residential proxies
-        browserSettings: {
-          fingerprint: {
-            browsers: ['chrome'],
-            devices: ['desktop'],
-            locales: ['en-US'],
-            operatingSystems: ['windows']
-          }
-        }
+        proxies: true
       })
     });
 
@@ -162,41 +147,22 @@ export async function scrapeProperty(query) {
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
     
-    // Add stealth settings to avoid detection
-    await page.setExtraHTTPHeaders({
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'DNT': '1',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
-      'Cache-Control': 'max-age=0'
-    });
-    
-    console.log(`[BROWSERBASE] Connected to remote browser with stealth settings`);
+    console.log(`[BROWSERBASE] Connected to remote browser`);
 
-    // Step 3: Navigate and wait for React app to fully load
+    // Step 3: Navigate and wait for page to load
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
     await page.goto(CITYPLAN_URL, { 
-      waitUntil: 'networkidle', // Wait for ALL network requests to finish
+      waitUntil: 'networkidle', 
       timeout: 90000
     });
     
-    // Wait for the loading screen to disappear
+    // Wait for loading screen to disappear
     console.log(`[BROWSERBASE] Waiting for loading screen to disappear...`);
-    try {
-      await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 });
-      console.log(`[BROWSERBASE] Loading screen gone!`);
-    } catch (e) {
-      console.log(`[BROWSERBASE] Loading screen timeout, proceeding anyway...`);
-    }
+    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
+      console.log(`[BROWSERBASE] Loading screen timeout, continuing...`);
+    });
     
-    // Wait for search box to appear (proves app loaded)
-    console.log(`[BROWSERBASE] Waiting for search box...`);
+    // Wait for search box
     await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
       state: 'visible', 
       timeout: 30000 
@@ -211,7 +177,7 @@ export async function scrapeProperty(query) {
         const dropdown = page.locator("select[name='selectedSearch']").first();
         await dropdown.waitFor({ state: 'visible', timeout: 10000 });
         await dropdown.selectOption({ label: "Lot on Plan" });
-        await page.waitForTimeout(2000); // Wait for dropdown change
+        await page.waitForTimeout(2000);
         
         console.log(`[BROWSERBASE] Looking for Lot on Plan search box...`);
         const searchBox = page.locator("input[placeholder*='Lot on Plan' i]").first();
@@ -219,7 +185,7 @@ export async function scrapeProperty(query) {
         await searchBox.click();
         await page.waitForTimeout(500);
         await searchBox.fill(cleanedQuery);
-        await page.waitForTimeout(3000); // Wait for autocomplete
+        await page.waitForTimeout(3000);
       } catch (e) {
         console.log(`[BROWSERBASE] Dropdown approach failed: ${e.message}, trying default search`);
         const searchBox = page.locator("input[placeholder*='Search for an address']").first();
@@ -236,17 +202,17 @@ export async function scrapeProperty(query) {
       await searchBox.click();
       await page.waitForTimeout(500);
       await searchBox.fill(cleanedQuery);
-      await page.waitForTimeout(3000); // Wait for autocomplete
+      await page.waitForTimeout(3000);
     }
     
-    // Step 5: Select first result with more explicit waiting
+    // Step 5: Select first result
     console.log(`[BROWSERBASE] Selecting first result...`);
     await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(1500); // Longer wait
+    await page.waitForTimeout(1500);
     await page.keyboard.press("Enter");
     
     console.log(`[BROWSERBASE] Waiting for results to load...`);
-    await page.waitForTimeout(8000); // Longer wait for results
+    await page.waitForTimeout(8000);
     
     // Step 6: Extract area and lot/plan
     console.log(`[BROWSERBASE] Extracting property details...`);
@@ -254,73 +220,54 @@ export async function scrapeProperty(query) {
     result.area_sqm = area;
     result.lot_plan = lotplan;
     
-    // Step 7: Wait for zone info to appear (increased timeout)
+    // Step 7: Wait for zone info
     console.log(`[BROWSERBASE] Waiting for zone information...`);
-    let zoneFound = false;
-    try {
-      await page.waitForSelector(
-        "text=/Medium density residential|Low density residential|High density residential/i",
-        { timeout: 30000 } // Increased to 30 seconds
-      );
-      zoneFound = true;
-      console.log(`[BROWSERBASE] Zone information found!`);
-    } catch (e) {
-      console.log(`[BROWSERBASE] Zone selector timeout, trying to extract from current page...`);
-      // Continue anyway - we might still get data from text extraction
-    }
+    await page.waitForSelector(
+      "text=/Medium density residential|Low density residential|High density residential/i",
+      { timeout: 30000 }
+    ).catch(() => {
+      console.log(`[BROWSERBASE] Zone selector timeout, continuing...`);
+    });
+    await page.waitForTimeout(2000);
     
-    // Give it a bit more time if zone was found
-    if (zoneFound) {
-      await page.waitForTimeout(2000);
-    } else {
-      await page.waitForTimeout(5000); // Wait longer if zone didn't appear
-    }
-    
-    // Step 8: Extract all text from page
+    // Step 8: Extract all text
     console.log(`[BROWSERBASE] Extracting page text...`);
     const panelText = await page.locator("body").innerText();
     console.log(`[BROWSERBASE] Extracted ${panelText.length} characters of text`);
-    console.log(`[BROWSERBASE] First 500 chars: ${panelText.substring(0, 500)}`);
     
     // Step 9: Extract zone, density, overlays
     const extracted = extractZoneDensityOverlays(panelText);
-    console.log(`[BROWSERBASE] Parsed data:`, {
-      zone: extracted.zone,
-      density: extracted.density,
-      overlays: extracted.overlays.length
-    });
     result.zone = extracted.zone;
     result.residential_density = extracted.density;
     result.overlays = extracted.overlays;
     
-    // Step 10: Extract address if lotplan search
+    // Step 10: Extract address
     if (queryType === "lotplan") {
       const addressMatch = panelText.match(
-        /(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent|Boulevard|Terrace|Circuit)[,\s]+[A-Za-z\s]+)/i
+        /(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent)[,\s]+[A-Za-z\s]+)/i
       );
       if (addressMatch) {
-        // Clean up the address - remove any newlines or extra spaces
-        result.address = addressMatch[1].trim().replace(/\s+/g, ' ');
+        result.address = addressMatch[1].trim();
       }
     } else {
       result.address = cleanedQuery;
     }
     
     result.success = true;
-    console.log(`[BROWSERBASE] Scraping complete! Found zone: ${result.zone}, overlays: ${result.overlays.length}`);
+    console.log(`[BROWSERBASE] Scraping complete!`);
     
     // Step 11: Close browser
     await browser.close();
     
-    // Format response to match API structure
+    // Format response
     return {
       property: {
         lotplan: result.lot_plan,
         address: result.address,
         zone: result.zone,
-        zoneCode: result.residential_density, // Use density as zone code for now
+        zoneCode: result.residential_density,
         density: result.residential_density,
-        height: null, // Not extracted in Python script
+        height: null,
         area: result.area_sqm ? `${result.area_sqm}sqm` : null,
         overlays: result.overlays
       },
@@ -336,7 +283,6 @@ export async function scrapeProperty(query) {
     console.error('[BROWSERBASE ERROR]', error);
     result.error = error.message;
     
-    // Make sure to close browser on error
     if (browser) {
       try {
         await browser.close();
@@ -350,7 +296,7 @@ export async function scrapeProperty(query) {
 }
 
 /**
- * Debug version - returns raw text for troubleshooting
+ * Debug version
  */
 export async function scrapePropertyDebug(query) {
   let browser = null;
@@ -378,22 +324,15 @@ export async function scrapePropertyDebug(query) {
     console.log(`[DEBUG] Navigating to ${CITYPLAN_URL}...`);
     await page.goto(CITYPLAN_URL, { waitUntil: 'networkidle', timeout: 90000 });
     
-    console.log(`[DEBUG] Waiting for loading screen to disappear...`);
-    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
-      console.log(`[DEBUG] Loading screen timeout`);
-    });
+    console.log(`[DEBUG] Waiting for loading screen...`);
+    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {});
     
-    console.log(`[DEBUG] Waiting for search box...`);
     await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
       state: 'visible', 
       timeout: 30000 
-    }).catch(() => {
-      console.log(`[DEBUG] Search box not found`);
-    });
+    }).catch(() => {});
     
     await page.waitForTimeout(5000);
-    
-    console.log(`[DEBUG] Extracting page data...`);
     
     const title = await page.title();
     const url = page.url();
