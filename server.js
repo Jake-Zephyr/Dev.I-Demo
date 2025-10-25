@@ -95,27 +95,51 @@ app.get('/api/test-browserbase', async (req, res) => {
 // Main advisory endpoint (Claude + Scraper)
 app.post('/api/advise', async (req, res) => {
   try {
+    console.log('=====================================');
+    console.log('[ADVISE] NEW REQUEST');
+    console.log('[ADVISE] Timestamp:', new Date().toISOString());
+    console.log('[ADVISE] Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('[ADVISE] Body received:', JSON.stringify(req.body, null, 2));
+    console.log('[ADVISE] Body type:', typeof req.body);
+    console.log('[ADVISE] Query field:', req.body.query);
+    console.log('=====================================');
+    
     const { query } = req.body;
     
     if (!query) {
+      console.log('[ADVISE] ERROR: No query provided');
       return res.status(400).json({
         success: false,
         error: 'Query is required'
       });
     }
     
-    console.log(`[ADVISE] Query: ${query}`);
+    console.log(`[ADVISE] Processing query: "${query}"`);
     
     // Get advisory from Claude (it will call scraper if needed)
     const response = await getAdvisory(query);
     
-    res.json({
+    console.log('[ADVISE] Response generated');
+    console.log('[ADVISE] Response structure:', JSON.stringify({
+      hasAnswer: !!response.answer,
+      answerLength: response.answer?.length,
+      hasPropertyData: !!response.propertyData,
+      usedTool: response.usedTool
+    }, null, 2));
+    
+    const result = {
       success: true,
       response,
       timestamp: new Date().toISOString()
-    });
+    };
+    
+    console.log('[ADVISE] Sending response to client');
+    console.log('=====================================');
+    
+    res.json(result);
   } catch (error) {
     console.error('[ADVISE ERROR]', error);
+    console.error('[ADVISE ERROR] Stack:', error.stack);
     res.status(500).json({
       success: false,
       error: error.message
