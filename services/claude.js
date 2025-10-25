@@ -12,7 +12,12 @@ const anthropic = new Anthropic({
  */
 export async function getAdvisory(userQuery) {
   try {
-    console.log('[CLAUDE] Processing query...');
+    console.log('=====================================');
+    console.log('[CLAUDE] New advisory request');
+    console.log('[CLAUDE] User query:', userQuery);
+    console.log('[CLAUDE] Query type:', typeof userQuery);
+    console.log('[CLAUDE] Query length:', userQuery?.length);
+    console.log('=====================================');
 
     // Define the tool for property lookup
     const tools = [{
@@ -31,6 +36,7 @@ export async function getAdvisory(userQuery) {
     }];
 
     // Initial request to Claude
+    console.log('[CLAUDE] Sending request to Anthropic API...');
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
@@ -51,13 +57,16 @@ User query: ${userQuery}`
     });
 
     console.log('[CLAUDE] Initial response received');
+    console.log('[CLAUDE] Response content types:', response.content.map(c => c.type));
 
     // Check if Claude wants to use the tool
     const toolUse = response.content.find(c => c.type === 'tool_use');
 
     if (toolUse) {
+      console.log('=====================================');
       console.log(`[CLAUDE] Tool called: ${toolUse.name}`);
-      console.log(`[CLAUDE] Tool input:`, toolUse.input);
+      console.log(`[CLAUDE] Tool input:`, JSON.stringify(toolUse.input, null, 2));
+      console.log('=====================================');
 
       // Call the scraper
       const propertyData = await scrapeProperty(toolUse.input.query);
