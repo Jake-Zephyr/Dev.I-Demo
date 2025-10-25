@@ -1,5 +1,5 @@
-// services/browserbase.js
-import Anthropic from '@anthropic-ai/sdk';
+// services/browserbase.js - PROPER PLAYWRIGHT INTEGRATION
+import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
@@ -9,177 +9,165 @@ if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
 }
 
 /**
- * Scrapes Gold Coast City Plan for property information
+ * Scrapes Gold Coast City Plan for property information using Playwright on BrowserBase
  * @param {string} query - Lot/plan (e.g., "12RP39932") or address (e.g., "22 Mary Avenue, Broadbeach")
  * @returns {Promise<Object>} Property data with zoning, density, height, overlays, and planning context
  */
 export async function scrapeProperty(query) {
+  let browser = null;
+  
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query}`);
     
-    // Step 1: Create a browser session
+    // Step 1: Create BrowserBase session and get WebSocket URL
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-bb-api-key': BROWSERBASE_API_KEY
+        'X-BB-API-Key': BROWSERBASE_API_KEY
       },
       body: JSON.stringify({
-        projectId: BROWSERBASE_PROJECT_ID,
-        browserSettings: {
-          timeout: 120000 // 2 minutes
-        }
+        projectId: BROWSERBASE_PROJECT_ID
       })
     });
 
     if (!sessionResponse.ok) {
-      throw new Error(`Failed to create session: ${sessionResponse.statusText}`);
+      const errorText = await sessionResponse.text();
+      throw new Error(`Failed to create session: ${sessionResponse.statusText} - ${errorText}`);
     }
 
     const session = await sessionResponse.json();
     const sessionId = session.id;
     console.log(`[BROWSERBASE] Session created: ${sessionId}`);
 
-    // Step 2: Use Claude to control the browser via Anthropic SDK
-    const anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY
+    // Step 2: Connect Playwright to BrowserBase's remote browser
+    const wsUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&sessionId=${sessionId}`;
+    
+    browser = await chromium.connectOverCDP(wsUrl);
+    const context = browser.contexts()[0];
+    const page = context.pages()[0] || await context.newPage();
+    
+    console.log(`[BROWSERBASE] Connected to remote browser`);
+
+    // Step 3: Navigate to Gold Coast City Plan
+    console.log(`[BROWSERBASE] Navigating to Gold Coast City Plan...`);
+    await page.goto('https://cityplan.goldcoast.qld.gov.au/eplan/', {
+      waitUntil: 'networkidle',
+      timeout: 60000
     });
 
-    const scrapingPrompt = `You are a web scraping assistant. Navigate to https://cityplan.goldcoast.qld.gov.au/eplan/ and extract property planning information.
+    console.log(`[BROWSERBASE] Page loaded, looking for search box...`);
 
-Query: ${query}
+    // Step 4: Wait for and fill search box
+    // Adjust these selectors based on the actual Gold Coast website structure
+    await page.waitForSelector('input[type="text"], input[type="search"]', { timeout: 30000 });
+    
+    const searchBox = await page.locator('input[type="text"], input[type="search"]').first();
+    await searchBox.fill(query);
+    await searchBox.press('Enter');
 
-Steps:
-1. Go to https://cityplan.goldcoast.qld.gov.au/eplan/
-2. Find the search box and enter: ${query}
-3. Wait for results to load
-4. Extract the following information:
-   - Zone (e.g., "High Density Residential")
-   - Zone Code (e.g., "HDR")
-   - Residential Density (e.g., "RD5")
-   - Building Height limit (e.g., "8 storeys", "No limit", "16m")
-   - Area (site area in sqm)
-   - Overlays (any applicable overlays like "Broadbeach LAP", "Character Overlay CO1", etc.)
-   - Lot/Plan number
-5. If available, click into the Zone Code page and extract key planning requirements
-6. If a Local Area Plan (LAP) is mentioned, try to extract key requirements
+    console.log(`[BROWSERBASE] Search submitted, waiting for results...`);
 
-Return the data as a JSON object with this structure:
-{
-  "property": {
-    "lotplan": "string",
-    "address": "string or null",
-    "zone": "string",
-    "zoneCode": "string",
-    "density": "string",
-    "height": "string",
-    "area": "string",
-    "overlays": ["array of strings"]
-  },
-  "planningContext": {
-    "zoneDescription": "string or null",
-    "lapRequirements": "string or null",
-    "overlayRestrictions": "string or null"
-  },
-  "scrapedAt": "ISO timestamp"
-}
+    // Step 5: Wait for results to load
+    await page.waitForTimeout(5000); // Wait 5 seconds for results
 
-If you cannot find certain information, use null. Be thorough but efficient.`;
-
-    // Use Claude with computer use to scrape
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: scrapingPrompt
-      }],
-      // Note: BrowserBase integration with Claude's computer use
-      // This is a simplified version - in production you'd use their full API
+    // Step 6: Extract property data
+    // This is a basic extraction - you'll need to adjust selectors based on actual page structure
+    const propertyData = await page.evaluate(() => {
+      // Look for common text patterns on the results page
+      const bodyText = document.body.innerText;
+      
+      // Extract zone
+      const zoneMatch = bodyText.match(/Zone[:\s]+([A-Za-z\s]+?)(?:\n|$|Zone Code)/i);
+      const zone = zoneMatch ? zoneMatch[1].trim() : null;
+      
+      // Extract zone code
+      const zoneCodeMatch = bodyText.match(/Zone Code[:\s]+([A-Z0-9]+)/i);
+      const zoneCode = zoneCodeMatch ? zoneCodeMatch[1].trim() : null;
+      
+      // Extract density
+      const densityMatch = bodyText.match(/Residential Density[:\s]+(RD\d+)/i);
+      const density = densityMatch ? densityMatch[1].trim() : null;
+      
+      // Extract height
+      const heightMatch = bodyText.match(/Building Height[:\s]+([^\n]+)/i);
+      const height = heightMatch ? heightMatch[1].trim() : null;
+      
+      // Extract area
+      const areaMatch = bodyText.match(/Area[:\s]+([0-9.,]+\s*(?:sqm|m²|m2))/i);
+      const area = areaMatch ? areaMatch[1].trim() : null;
+      
+      // Extract overlays
+      const overlays = [];
+      const overlayMatches = bodyText.matchAll(/Overlay[:\s]+([^\n]+)/gi);
+      for (const match of overlayMatches) {
+        overlays.push(match[1].trim());
+      }
+      
+      return {
+        zone,
+        zoneCode,
+        density,
+        height,
+        area,
+        overlays,
+        rawText: bodyText.substring(0, 1000) // First 1000 chars for debugging
+      };
     });
+
+    console.log(`[BROWSERBASE] Data extracted:`, propertyData);
+
+    // Step 7: Format response
+    const result = {
+      property: {
+        lotplan: query,
+        address: null,
+        zone: propertyData.zone,
+        zoneCode: propertyData.zoneCode,
+        density: propertyData.density,
+        height: propertyData.height,
+        area: propertyData.area,
+        overlays: propertyData.overlays
+      },
+      planningContext: {
+        zoneDescription: null,
+        lapRequirements: null,
+        overlayRestrictions: null
+      },
+      debug: {
+        rawText: propertyData.rawText // Include for debugging
+      },
+      scrapedAt: new Date().toISOString()
+    };
 
     console.log(`[BROWSERBASE] Scraping complete`);
 
-    // Step 3: Parse Claude's response
-    const resultText = response.content.find(c => c.type === 'text')?.text || '{}';
+    // Step 8: Close browser
+    await browser.close();
     
-    // Try to extract JSON from the response
-    let data;
-    try {
-      // Look for JSON in the response
-      const jsonMatch = resultText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        data = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No JSON found in response');
-      }
-    } catch (parseError) {
-      console.error('[BROWSERBASE] Failed to parse JSON, using fallback');
-      // Fallback: Create basic structure from text
-      data = {
-        property: {
-          lotplan: query,
-          address: null,
-          zone: extractFromText(resultText, 'zone'),
-          zoneCode: null,
-          density: extractFromText(resultText, 'density'),
-          height: extractFromText(resultText, 'height'),
-          area: null,
-          overlays: []
-        },
-        planningContext: {
-          zoneDescription: null,
-          lapRequirements: null,
-          overlayRestrictions: null
-        },
-        scrapedAt: new Date().toISOString()
-      };
-    }
-
-    // Step 4: Close the session
-    await fetch(`https://www.browserbase.com/v1/sessions/${sessionId}`, {
-      method: 'DELETE',
-      headers: {
-        'x-bb-api-key': BROWSERBASE_API_KEY
-      }
-    });
-
-    console.log(`[BROWSERBASE] Session closed`);
-
-    return data;
+    return result;
 
   } catch (error) {
     console.error('[BROWSERBASE ERROR]', error);
+    
+    // Make sure to close browser on error
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        console.error('[BROWSERBASE] Failed to close browser:', e);
+      }
+    }
+    
     throw new Error(`Scraping failed: ${error.message}`);
   }
 }
 
 /**
- * Helper function to extract information from text
+ * Helper function to detect if query is lot/plan or address
  */
-function extractFromText(text, field) {
-  const patterns = {
-    zone: /zone[:\s]+([A-Za-z\s]+)/i,
-    density: /density[:\s]+(RD\d+)/i,
-    height: /height[:\s]+([0-9]+[a-z\s]*)/i
-  };
-
-  const pattern = patterns[field];
-  if (!pattern) return null;
-
-  const match = text.match(pattern);
-  return match ? match[1].trim() : null;
-}
-
-/**
- * Alternative: Direct Playwright script approach via BrowserBase
- * This uploads your Python script to run on their infrastructure
- */
-export async function scrapePropertyWithScript(query) {
-  // This would upload your goldcoast_scraper.py to BrowserBase
-  // and run it on their infrastructure
-  // More reliable but requires script upload API
-  
-  // For now, we use the Claude-based approach above
-  throw new Error('Script-based scraping not yet implemented');
+function detectQueryType(query) {
+  // Lot/plan pattern: 12RP39932
+  const lotPlanPattern = /\b(\d+[A-Z]{1,4}\d+)\b/i;
+  return lotPlanPattern.test(query) ? 'lotplan' : 'address';
 }
