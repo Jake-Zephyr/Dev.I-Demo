@@ -1,4 +1,4 @@
-// services/browserbase.js - WORKING VERSION
+// services/browserbase.js - FIXED VERSION with address search
 import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
@@ -196,13 +196,23 @@ export async function scrapeProperty(query) {
         await page.waitForTimeout(3000);
       }
     } else {
+      // Address search
       console.log(`[BROWSERBASE] Looking for address search box...`);
       const searchBox = page.locator("input[placeholder*='Search for an address']").first();
       await searchBox.waitFor({ state: 'visible', timeout: 10000 });
       await searchBox.click();
       await page.waitForTimeout(500);
+      
+      console.log(`[BROWSERBASE] Typing address: ${cleanedQuery}`);
       await searchBox.fill(cleanedQuery);
-      await page.waitForTimeout(3000);
+      
+      // Wait longer for address autocomplete to appear
+      console.log(`[BROWSERBASE] Waiting for autocomplete dropdown...`);
+      await page.waitForTimeout(5000); // Increased from 3s to 5s
+      
+      // Check if autocomplete appeared
+      const dropdownVisible = await page.locator('[class*="autocomplete"], [role="listbox"], ul[class*="suggestions"]').count();
+      console.log(`[BROWSERBASE] Autocomplete elements found: ${dropdownVisible}`);
     }
     
     // Step 5: Select first result
@@ -212,7 +222,7 @@ export async function scrapeProperty(query) {
     await page.keyboard.press("Enter");
     
     console.log(`[BROWSERBASE] Waiting for results to load...`);
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(10000); // Increased to 10 seconds for address searches
     
     // Step 6: Extract area and lot/plan
     console.log(`[BROWSERBASE] Extracting property details...`);
