@@ -65,23 +65,30 @@ async function extractAreaAndLotplan(page) {
  * Extract zone, density, and overlays from panel text
  */
 function extractZoneDensityOverlays(panelText) {
-  // Extract zone
+  // Extract zone - expanded to cover more zone types
   const zoneMatch = panelText.match(
-    /(Low density residential|Low-medium density residential|Medium density residential|High density residential)/i
+    /(Low density residential|Low-medium density residential|Medium density residential|High density residential|High impact industry|Low impact industry|Medium impact industry|Community facilities|Major centre|District centre|Neighbourhood centre|Rural|Rural residential|Environmental management and conservation|Open space|Special purpose|Sport and recreation|Tourist accommodation)/i
   );
   const zone = zoneMatch ? zoneMatch[1] : null;
   
-  // Extract density
-  const densityMatch = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
-  const density = densityMatch ? densityMatch[1] : null;
+  // Extract density - try multiple patterns
+  let density = null;
+  const densityMatch1 = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
+  const densityMatch2 = panelText.match(/\b(RD\d+)\b/); // Just find RD followed by numbers anywhere
+  
+  if (densityMatch1) {
+    density = densityMatch1[1];
+  } else if (densityMatch2) {
+    density = densityMatch2[1];
+  }
   
   // Extract overlays
   const overlays = [];
-  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government|Plan Zone|$)/is);
+  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government Infrastructure Plan|Plan Zone|$)/is);
   if (overlayMatch) {
     const overlayText = overlayMatch[1];
     const lines = overlayText.split('\n').map(ln => ln.trim()).filter(ln => ln);
-    const exclude = ["view section", "show on map", "overlays"];
+    const exclude = ["view section", "show on map", "overlays", "powered by", "map and location", "map tools", "map layers"];
     
     for (const ln of lines) {
       if (exclude.some(ex => ln.toLowerCase().includes(ex))) continue;
@@ -206,23 +213,42 @@ export async function scrapeProperty(query) {
       console.log(`[BROWSERBASE] Typing address: ${cleanedQuery}`);
       await searchBox.fill(cleanedQuery);
       
-      // Wait longer for address autocomplete to appear
+      // Wait for autocomplete to appear (smart wait!)
       console.log(`[BROWSERBASE] Waiting for autocomplete dropdown...`);
-      await page.waitForTimeout(5000); // Increased from 3s to 5s
-      
-      // Check if autocomplete appeared
-      const dropdownVisible = await page.locator('[class*="autocomplete"], [role="listbox"], ul[class*="suggestions"]').count();
-      console.log(`[BROWSERBASE] Autocomplete elements found: ${dropdownVisible}`);
+      try {
+        await page.waitForSelector('[role="option"], [class*="suggestion"], [class*="autocomplete"] li', { 
+          state: 'visible', 
+          timeout: 8000 
+        });
+        console.log(`[BROWSERBASE] Autocomplete appeared!`);
+      } catch (e) {
+        console.log(`[BROWSERBASE] No autocomplete found, continuing anyway...`);
+      }
+      await page.waitForTimeout(500); // Small buffer for stability
     }
     
     // Step 5: Select first result
     console.log(`[BROWSERBASE] Selecting first result...`);
     await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(500);
     await page.keyboard.press("Enter");
     
-    console.log(`[BROWSERBASE] Waiting for results to load...`);
-    await page.waitForTimeout(10000); // Increased to 10 seconds for address searches
+    // Wait for navigation to complete (smart wait!)
+    console.log(`[BROWSERBASE] Waiting for property page to load...`);
+    try {
+      // Wait for URL to change or property panel to appear
+      await Promise.race([
+        page.waitForURL(/.*/, { waitUntil: 'domcontentloaded', timeout: 15000 }),
+        page.waitForSelector('#isoplan-property-detail', { state: 'visible', timeout: 15000 })
+      ]);
+      console.log(`[BROWSERBASE] Property page loaded!`);
+      
+      // Small buffer for all content to populate
+      await page.waitForTimeout(2000);
+    } catch (e) {
+      console.log(`[BROWSERBASE] Navigation timeout, using fallback wait...`);
+      await page.waitForTimeout(8000);
+    }
     
     // Step 6: Extract area and lot/plan
     console.log(`[BROWSERBASE] Extracting property details...`);
@@ -230,15 +256,19 @@ export async function scrapeProperty(query) {
     result.area_sqm = area;
     result.lot_plan = lotplan;
     
-    // Step 7: Wait for zone info
+    // Step 7: Wait for zone info to appear (smart wait!)
     console.log(`[BROWSERBASE] Waiting for zone information...`);
-    await page.waitForSelector(
-      "text=/Medium density residential|Low density residential|High density residential/i",
-      { timeout: 30000 }
-    ).catch(() => {
-      console.log(`[BROWSERBASE] Zone selector timeout, continuing...`);
-    });
-    await page.waitForTimeout(2000);
+    try {
+      await page.waitForSelector(
+        "text=/density residential|residential zone|industry|centre|rural/i",
+        { timeout: 15000 }
+      );
+      console.log(`[BROWSERBASE] Zone info detected!`);
+      await page.waitForTimeout(1000); // Small buffer for overlays to load
+    } catch (e) {
+      console.log(`[BROWSERBASE] Zone not found, continuing anyway...`);
+      await page.waitForTimeout(2000);
+    }
     
     // Step 8: Extract all text
     console.log(`[BROWSERBASE] Extracting page text...`);
