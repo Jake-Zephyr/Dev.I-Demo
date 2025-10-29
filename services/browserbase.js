@@ -243,11 +243,23 @@ export async function scrapeProperty(query) {
       ]);
       console.log(`[BROWSERBASE] Property page loaded!`);
       
-      // Small buffer for all content to populate
-      await page.waitForTimeout(2000);
+      // CRITICAL: Wait for actual content to populate
+      console.log(`[BROWSERBASE] Waiting for property content to populate...`);
+      try {
+        // Wait for either zone text or lot/plan text to appear (proves content loaded)
+        await Promise.race([
+          page.waitForSelector('text=/Lot\\/Plan/i', { timeout: 10000 }),
+          page.waitForSelector('text=/density|zone|overlay/i', { timeout: 10000 })
+        ]);
+        console.log(`[BROWSERBASE] Property content detected!`);
+        await page.waitForTimeout(2000); // Buffer for rest of content
+      } catch (e) {
+        console.log(`[BROWSERBASE] Content timeout, using fallback...`);
+        await page.waitForTimeout(5000);
+      }
     } catch (e) {
       console.log(`[BROWSERBASE] Navigation timeout, using fallback wait...`);
-      await page.waitForTimeout(8000);
+      await page.waitForTimeout(10000);
     }
     
     // Step 6: Extract area and lot/plan
