@@ -1,4 +1,5 @@
-// services/browserbase.js - FIXED VERSION with address search
+// services/browserbase.js — FAST & ROBUST
+// Requires: playwright-core
 import { chromium } from 'playwright-core';
 
 const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
@@ -9,25 +10,97 @@ if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
   console.error('⚠️  Missing BrowserBase credentials in environment variables');
 }
 
-/**
- * Detect if query is an address or lot/plan
- */
-function detectQueryType(query) {
-  const lotplanPattern = /\b(\d+[A-Z]{1,4}\d+)\b/i;
-  const match = query.match(lotplanPattern);
-  if (match) {
-    return { type: "lotplan", cleaned: match[1].toUpperCase() };
+/* =========================
+ * SMART WAITS & UTILITIES
+ * ========================= */
+
+async function retry(fn, { tries = 2, delayMs = 700 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) { lastErr = e; }
+    if (i < tries - 1) await new Promise(r => setTimeout(r, delayMs));
   }
-  return { type: "address", cleaned: query.trim() };
+  throw lastErr;
 }
 
-/**
- * Extract area and lot/plan from property detail card
- */
+// Wait until #isoplan-property-detail has real content (MutationObserver)
+async function waitForPanelPopulated(page, { panel = '#isoplan-property-detail', minChars = 800, timeout = 15000 } = {}) {
+  const ok = await page.evaluate(({ panel, minChars, timeout }) => new Promise(resolve => {
+    const root = document.querySelector(panel);
+    if (!root) return resolve(false);
+    const textLen = () => (root.innerText || '').trim().length;
+    if (textLen() >= minChars) return resolve(true);
+
+    const mo = new MutationObserver(() => {
+      if (textLen() >= minChars) { mo.disconnect(); resolve(true); }
+    });
+    mo.observe(root, { childList: true, subtree: true, characterData: true });
+    setTimeout(() => { mo.disconnect(); resolve(false); }, timeout);
+  }), { panel, minChars, timeout });
+  return ok;
+}
+
+// Robust zoning wait (selectors + regex sweep)
+async function waitForZoneText(page, { timeout = 15000 } = {}) {
+  const candidates = [
+    '[data-test="zone"]',
+    '#isoplan-property-detail [data-section="zoning"]',
+    'text=/density\\s+residential/i',
+    'text=/impact\\s+industry/i',
+    'text=/centre/i',
+    'text=/rural/i'
+  ];
+  const deadline = Date.now() + timeout;
+
+  for (const sel of candidates) {
+    try { await page.waitForSelector(sel, { timeout: Math.max(500, deadline - Date.now()) }); return true; } catch {}
+  }
+
+  const zoneRegex = /\b(?:very\s+)?(?:low|low-medium|medium|high)\s+density\s+residential\b|\b(?:low|medium|high)\s+impact\s+industry\b|centre|rural/i;
+  while (Date.now() < deadline) {
+    const t = await page.evaluate(() => document.body.innerText || '');
+    if (zoneRegex.test(t)) return true;
+    await page.waitForTimeout(250);
+  }
+  return false;
+}
+
+// OPTIONAL: gate on the XHR that carries detail (pathPart may be adjusted)
+async function waitForPropertyXHR(page, { pathPart = '/eplan/', timeout = 12000 } = {}) {
+  try {
+    await page.waitForResponse(r => r.url().includes(pathPart) && r.status() === 200, { timeout });
+  } catch { /* non-fatal */ }
+}
+
+/* =========================
+ * QUERY TYPE DETECTION
+ * ========================= */
+
+function detectQueryType(query) {
+  const q = query.trim();
+  const normalized = q.replace(/\bon\b/gi, '/').replace(/\blot\b/gi, '').replace(/\s+/g, ' ').trim();
+
+  // "1/SP123456", "12/RP34567", "5/RP123456" or "12 RP34567"
+  const slashPattern = /\b(\d+)\s*\/\s*([A-Z]{1,4}\d{2,7})\b/i;
+  const spacePattern = /\b(\d+)\s+([A-Z]{1,4}\d{2,7})\b/i;
+
+  let m = normalized.match(slashPattern) || normalized.match(spacePattern);
+  if (m) {
+    const lot = m[1];
+    const plan = m[2].toUpperCase();
+    return { type: 'lotplan', cleaned: `${lot}/${plan}`, lot, plan };
+  }
+  return { type: 'address', cleaned: q };
+}
+
+/* =========================
+ * EXTRACTION HELPERS
+ * ========================= */
+
 async function extractAreaAndLotplan(page) {
   let area = null;
   let lotplan = null;
-  
+
   try {
     const container = page.locator("#isoplan-property-detail");
     const divs = container.locator("div");
@@ -35,80 +108,90 @@ async function extractAreaAndLotplan(page) {
 
     for (let i = 0; i < count; i++) {
       try {
-        const txt = await divs.nth(i).innerText({ timeout: 1000 });
-        
+        const txt = await divs.nth(i).innerText({ timeout: 800 });
+
         if (!area) {
-          const areaMatch = txt.match(/Plan\s*Area\s*([\d.,]+)\s*m[²2]/i);
-          if (areaMatch) {
-            area = areaMatch[1].replace(/,/g, "");
-          }
+          const areaMatch = txt.match(/(?:Plan\s*Area|Site\s*Area|Area)\s*[:\-]?\s*([\d.,]+)\s*m[²2]/i);
+          if (areaMatch) area = areaMatch[1].replace(/,/g, "");
         }
-        
+
         if (!lotplan) {
-          const lotplanMatch = txt.match(/Lot\/Plan\s+(\w+)/i);
-          if (lotplanMatch) {
-            lotplan = lotplanMatch[1];
-          }
+          // Accept "Lot/Plan", "Lot on Plan", and raw "1/SP123456"
+          const lp1 = txt.match(/Lot\s*\/\s*Plan\s*[:\-]?\s*([A-Za-z0-9/ ]+)/i);
+          const lp2 = txt.match(/Lot\s*on\s*Plan\s*[:\-]?\s*([A-Za-z0-9/ ]+)/i);
+          const lp3 = txt.match(/\b(\d+)\s*\/\s*([A-Z]{1,4}\d{2,8})\b/);
+          const lp4 = txt.match(/\bLot\s*(\d+)\s*[–-]?\s*([A-Z]{1,4}\d{2,8})\b/i);
+
+          const pick = lp1?.[1] || lp2?.[1] || (lp3 ? `${lp3[1]}/${lp3[2]}` : null) || (lp4 ? `${lp4[1]}/${lp4[2].toUpperCase()}` : null);
+          if (pick) lotplan = pick.replace(/\s+/g, '').toUpperCase();
         }
-      } catch (e) {
-        // Continue to next div
-      }
+
+        if (area && lotplan) break;
+      } catch {/* keep scanning */}
     }
   } catch (e) {
     console.error('[EXTRACT] Error extracting area/lotplan:', e.message);
   }
-  
+
   return { area, lotplan };
 }
 
-/**
- * Extract zone, density, and overlays from panel text
- */
 function extractZoneDensityOverlays(panelText) {
-  // Extract zone - expanded to cover more zone types
-  const zoneMatch = panelText.match(
-    /(Low density residential|Low-medium density residential|Medium density residential|High density residential|High impact industry|Low impact industry|Medium impact industry|Community facilities|Major centre|District centre|Neighbourhood centre|Rural|Rural residential|Environmental management and conservation|Open space|Special purpose|Sport and recreation|Tourist accommodation)/i
-  );
-  const zone = zoneMatch ? zoneMatch[1] : null;
-  
-  // Extract density - try multiple patterns
+  // Zoning (order matters—most specific first)
+  const zoneRegexes = [
+    /\bhigh\s+density\s+residential\b/i,
+    /\blow[-\s]?medium\s+density\s+residential\b/i,
+    /\bmedium\s+density\s+residential\b/i,
+    /\blow\s+density\s+residential\b/i,
+    /\bhigh\s+impact\s+industry\b/i,
+    /\bmedium\s+impact\s+industry\b/i,
+    /\blow\s+impact\s+industry\b/i,
+    /\bmajor\s+centre\b/i,
+    /\bdistrict\s+centre\b/i,
+    /\bneighbourhood\s+centre\b/i,
+    /\bcommunity\s+facilities?\b/i,
+    /\brural\s+residential\b/i,
+    /\brural\b/i,
+    /\benvironmental\s+management\s+and\s+conservation\b/i,
+    /\bopen\s+space\b/i,
+    /\bspecial\s+purpose\b/i,
+    /\bsport\s+and\s+recreation\b/i,
+    /\btourist\s+accommodation\b/i
+  ];
+  const zone = (zoneRegexes.map(r => (panelText.match(r)?.[0] || null)).find(Boolean)) || null;
+
+  // Density code: RDxx or shorthand (ldr/mdr/hdr)
   let density = null;
-  const densityMatch1 = panelText.match(/Residential\s+density[:\s]+(RD\d+)/i);
-  const densityMatch2 = panelText.match(/\b(RD\d+)\b/); // Just find RD followed by numbers anywhere
-  
-  if (densityMatch1) {
-    density = densityMatch1[1];
-  } else if (densityMatch2) {
-    density = densityMatch2[1];
-  }
-  
-  // Extract overlays
+  const dens = panelText.match(/\b(RD\d{1,3})\b/i) ||
+               panelText.match(/\b(?:ldr|mdr|hdr)\b/i);
+  if (dens) density = dens[1] ? dens[1].toUpperCase() : dens[0].toUpperCase();
+
+  // Overlays section slicing
   const overlays = [];
-  const overlayMatch = panelText.match(/Overlays(.*?)(?:LGIP|Local Government Infrastructure Plan|Plan Zone|$)/is);
-  if (overlayMatch) {
-    const overlayText = overlayMatch[1];
-    const lines = overlayText.split('\n').map(ln => ln.trim()).filter(ln => ln);
-    const exclude = ["view section", "show on map", "overlays", "powered by", "map and location", "map tools", "map layers"];
-    
+  const overlayBlock = panelText.match(/Overlays(.*?)(?:LGIP|Local Government Infrastructure Plan|Plan Zone|Zoning|$)/is);
+  if (overlayBlock) {
+    const lines = overlayBlock[1].split('\n').map(s => s.trim()).filter(Boolean);
+    const exclude = new Set(['view section','show on map','overlays','powered by','map and location','map tools','map layers']);
     for (const ln of lines) {
-      if (exclude.some(ex => ln.toLowerCase().includes(ex))) continue;
-      if (ln.length > 5 && !overlays.includes(ln)) {
-        overlays.push(ln);
-      }
+      const low = ln.toLowerCase();
+      if ([...exclude].some(x => low.includes(x))) continue;
+      if (ln.length > 4 && !overlays.includes(ln)) overlays.push(ln);
     }
   }
-  
+
   return { zone, density, overlays };
 }
 
-/**
- * Main scraper function
- */
+/* =========================
+ * MAIN SCRAPER
+ * ========================= */
+
 export async function scrapeProperty(query) {
   let browser = null;
-  
+
   const { type: queryType, cleaned: cleanedQuery } = detectQueryType(query);
-  
+
+  const timings = { t0: Date.now() };
   const result = {
     query,
     query_type: queryType,
@@ -121,11 +204,11 @@ export async function scrapeProperty(query) {
     success: false,
     error: null
   };
-  
+
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query} (${queryType})`);
-    
-    // Step 1: Create BrowserBase session with proxy and stealth
+
+    // 1) Create BrowserBase session
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
@@ -147,171 +230,160 @@ export async function scrapeProperty(query) {
     const sessionId = session.id;
     console.log(`[BROWSERBASE] Session created: ${sessionId}`);
 
-    // Step 2: Connect Playwright to BrowserBase
+    // 2) Connect Playwright to BrowserBase (CDP)
     const wsUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&sessionId=${sessionId}`;
-    
     browser = await chromium.connectOverCDP(wsUrl);
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
-    
     console.log(`[BROWSERBASE] Connected to remote browser`);
 
-    // Step 3: Navigate and wait for page to load
+    // 3) Navigate and app ready
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
-    await page.goto(CITYPLAN_URL, { 
-      waitUntil: 'networkidle', 
-      timeout: 90000
-    });
-    
-    // Wait for loading screen to disappear
+    await page.goto(CITYPLAN_URL, { waitUntil: 'networkidle', timeout: 90000 });
+
+    // Wait for loading screen to disappear & search input visible
     console.log(`[BROWSERBASE] Waiting for loading screen to disappear...`);
     await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
       console.log(`[BROWSERBASE] Loading screen timeout, continuing...`);
     });
-    
-    // Wait for search box
-    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
-      state: 'visible', 
-      timeout: 30000 
+
+    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', {
+      state: 'visible',
+      timeout: 30000
     });
-    
+
     console.log(`[BROWSERBASE] App fully loaded! Searching for ${cleanedQuery}...`);
 
-    // Step 4: Handle search based on query type
-    if (queryType === "lotplan") {
+    // 4) Search path
+    if (queryType === 'lotplan') {
+      // Try the Lot on Plan UI first
       try {
-        console.log(`[BROWSERBASE] Looking for Lot on Plan dropdown...`);
+        console.log(`[BROWSERBASE] Selecting "Lot on Plan" search...`);
         const dropdown = page.locator("select[name='selectedSearch']").first();
         await dropdown.waitFor({ state: 'visible', timeout: 10000 });
         await dropdown.selectOption({ label: "Lot on Plan" });
-        await page.waitForTimeout(2000);
-        
-        console.log(`[BROWSERBASE] Looking for Lot on Plan search box...`);
+
         const searchBox = page.locator("input[placeholder*='Lot on Plan' i]").first();
         await searchBox.waitFor({ state: 'visible', timeout: 10000 });
         await searchBox.click();
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(150);
         await searchBox.fill(cleanedQuery);
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(300);
+
+        // Select first suggestion (if list appears), else Enter
+        const hasOpts = await page.$('[role="option"], [class*="suggestion"], [class*="autocomplete"] li');
+        if (hasOpts) {
+          await page.waitForSelector('[role="option"], [class*="suggestion"], [class*="autocomplete"] li', { timeout: 8000 });
+          await page.keyboard.press('ArrowDown');
+          await page.keyboard.press('Enter');
+        } else {
+          await page.keyboard.press('Enter');
+        }
       } catch (e) {
-        console.log(`[BROWSERBASE] Dropdown approach failed: ${e.message}, trying default search`);
+        console.log(`[BROWSERBASE] Lot/Plan path failed: ${e.message}, falling back to address box`);
+        await retry(async () => {
+          const searchBox = page.locator("input[placeholder*='Search for an address']").first();
+          await searchBox.waitFor({ state: 'visible', timeout: 10000 });
+          await searchBox.click();
+          await page.waitForTimeout(150);
+          await searchBox.fill(cleanedQuery, { timeout: 8000 });
+          await page.waitForSelector('[role="option"], [class*="suggestion"], [class*="autocomplete"] li', { state: 'visible', timeout: 8000 });
+          await page.keyboard.press('ArrowDown');
+          await page.keyboard.press('Enter');
+        }, { tries: 2, delayMs: 700 });
+      }
+    } else {
+      // Address path with auto-retry
+      await retry(async () => {
+        console.log(`[BROWSERBASE] Address search path...`);
         const searchBox = page.locator("input[placeholder*='Search for an address']").first();
         await searchBox.waitFor({ state: 'visible', timeout: 10000 });
         await searchBox.click();
-        await page.waitForTimeout(500);
-        await searchBox.fill(cleanedQuery);
-        await page.waitForTimeout(3000);
-      }
-    } else {
-      // Address search
-      console.log(`[BROWSERBASE] Looking for address search box...`);
-      const searchBox = page.locator("input[placeholder*='Search for an address']").first();
-      await searchBox.waitFor({ state: 'visible', timeout: 10000 });
-      await searchBox.click();
-      await page.waitForTimeout(500);
-      
-      console.log(`[BROWSERBASE] Typing address: ${cleanedQuery}`);
-      await searchBox.fill(cleanedQuery);
-      
-      // Wait for autocomplete to appear (smart wait!)
-      console.log(`[BROWSERBASE] Waiting for autocomplete dropdown...`);
-      try {
-        await page.waitForSelector('[role="option"], [class*="suggestion"], [class*="autocomplete"] li', { 
-          state: 'visible', 
-          timeout: 8000 
-        });
-        console.log(`[BROWSERBASE] Autocomplete appeared!`);
-      } catch (e) {
-        console.log(`[BROWSERBASE] No autocomplete found, continuing anyway...`);
-      }
-      await page.waitForTimeout(500); // Small buffer for stability
+        await page.waitForTimeout(150);
+        await searchBox.fill(cleanedQuery, { timeout: 8000 });
+
+        console.log(`[BROWSERBASE] Waiting for autocomplete dropdown...`);
+        await page.waitForSelector('[role="option"], [class*="suggestion"], [class*="autocomplete"] li', { state: 'visible', timeout: 8000 });
+
+        console.log(`[BROWSERBASE] Selecting first result...`);
+        await page.keyboard.press("ArrowDown");
+        await page.waitForTimeout(80);
+        await page.keyboard.press("Enter");
+      }, { tries: 2, delayMs: 700 });
     }
-    
-    // Step 5: Select first result
-    console.log(`[BROWSERBASE] Selecting first result...`);
-    await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(500);
-    await page.keyboard.press("Enter");
-    
-    // Wait for navigation to complete (smart wait!)
+
+    // 5) Confirm navigation & content ready (content-aware)
     console.log(`[BROWSERBASE] Waiting for property page to load...`);
-    try {
-      // Wait for URL to change or property panel to appear
-      await Promise.race([
-        page.waitForURL(/.*/, { waitUntil: 'domcontentloaded', timeout: 15000 }),
-        page.waitForSelector('#isoplan-property-detail', { state: 'visible', timeout: 15000 })
-      ]);
-      console.log(`[BROWSERBASE] Property page loaded!`);
-      
-      // CRITICAL: Wait for actual content to populate
-      console.log(`[BROWSERBASE] Waiting for property content to populate...`);
-      try {
-        // Wait for either zone text or lot/plan text to appear (proves content loaded)
-        await Promise.race([
-          page.waitForSelector('text=/Lot\\/Plan/i', { timeout: 10000 }),
-          page.waitForSelector('text=/density|zone|overlay/i', { timeout: 10000 })
-        ]);
-        console.log(`[BROWSERBASE] Property content detected!`);
-        await page.waitForTimeout(2000); // Buffer for rest of content
-      } catch (e) {
-        console.log(`[BROWSERBASE] Content timeout, using fallback...`);
-        await page.waitForTimeout(5000);
+    await Promise.race([
+      page.waitForSelector('#isoplan-property-detail', { state: 'visible', timeout: 20000 }),
+      page.waitForFunction(() => document.title && document.title.length > 0, { timeout: 15000 })
+    ]);
+    timings.panelVisible = Date.now();
+
+    // Prefer to wait for detail XHR (non-fatal if it doesn't match)
+    await waitForPropertyXHR(page, { pathPart: '/eplan/', timeout: 12000 }).catch(()=>{});
+
+    const populated = await waitForPanelPopulated(page, { panel: '#isoplan-property-detail', minChars: 800, timeout: 15000 });
+    timings.panelPopulated = Date.now();
+
+    if (!populated) {
+      console.log('[BROWSERBASE] Panel under-populated, reselecting first result once...');
+      const searchBox = page.locator("input[placeholder*='Search for an address']").first();
+      if (await searchBox.count()) {
+        await searchBox.click();
+        await page.keyboard.press('Enter');
+        await page.waitForSelector('#isoplan-property-detail', { timeout: 12000 }).catch(()=>{});
+        await waitForPanelPopulated(page, { panel: '#isoplan-property-detail', minChars: 800, timeout: 12000 });
+      } else {
+        // small grace wait
+        await page.waitForTimeout(800);
       }
-    } catch (e) {
-      console.log(`[BROWSERBASE] Navigation timeout, using fallback wait...`);
-      await page.waitForTimeout(10000);
     }
-    
-    // Step 6: Extract area and lot/plan
-    console.log(`[BROWSERBASE] Extracting property details...`);
+
+    // Lock in zoning presence (selectors + regex)
+    await waitForZoneText(page, { timeout: 15000 }).catch(()=>{});
+
+    // 6) Extract from the PANEL (not body)
+    const PANEL = '#isoplan-property-detail';
+    let panelText = await page.evaluate(sel => (document.querySelector(sel)?.innerText || '').trim(), PANEL);
+    console.log(`[BROWSERBASE] Extracted ${panelText.length} chars from panel`);
+
+    // Quick pulse if still thin
+    if (panelText.length < 800) {
+      await page.waitForTimeout(700);
+      const retryText = await page.evaluate(sel => (document.querySelector(sel)?.innerText || '').trim(), PANEL);
+      if (retryText.length > panelText.length) {
+        console.log(`[BROWSERBASE] Panel grew from ${panelText.length} to ${retryText.length} chars`);
+        panelText = retryText;
+      }
+    }
+
+    // 7) Parse details
     const { area, lotplan } = await extractAreaAndLotplan(page);
     result.area_sqm = area;
     result.lot_plan = lotplan;
-    
-    // Step 7: Wait for zone info to appear (smart wait!)
-    console.log(`[BROWSERBASE] Waiting for zone information...`);
-    try {
-      await page.waitForSelector(
-        "text=/density residential|residential zone|industry|centre|rural/i",
-        { timeout: 15000 }
-      );
-      console.log(`[BROWSERBASE] Zone info detected!`);
-      await page.waitForTimeout(1000); // Small buffer for overlays to load
-    } catch (e) {
-      console.log(`[BROWSERBASE] Zone not found, continuing anyway...`);
-      await page.waitForTimeout(2000);
-    }
-    
-    // Step 8: Extract all text
-    console.log(`[BROWSERBASE] Extracting page text...`);
-    const panelText = await page.locator("body").innerText();
-    console.log(`[BROWSERBASE] Extracted ${panelText.length} characters of text`);
-    
-    // Step 9: Extract zone, density, overlays
+
     const extracted = extractZoneDensityOverlays(panelText);
     result.zone = extracted.zone;
     result.residential_density = extracted.density;
     result.overlays = extracted.overlays;
-    
-    // Step 10: Extract address
+
+    // 8) Address backfill
     if (queryType === "lotplan") {
-      const addressMatch = panelText.match(
-        /(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent)[,\s]+[A-Za-z\s]+)/i
-      );
-      if (addressMatch) {
-        result.address = addressMatch[1].trim();
-      }
+      const addressMatch = panelText.match(/(\d+\s+[A-Za-z\s]+(?:Street|Road|Avenue|Court|Lane|Drive|Way|Place|Crescent|Boulevard|Parade|Terrace|Close|Quay)[,\s]+[A-Za-z\s]+)/i);
+      if (addressMatch) result.address = addressMatch[1].trim();
     } else {
       result.address = cleanedQuery;
     }
-    
+
     result.success = true;
+    timings.done = Date.now();
     console.log(`[BROWSERBASE] Scraping complete!`);
-    
-    // Step 11: Close browser
+
+    // 9) Close
     await browser.close();
-    
-    // Format response
+
+    // 10) Format response
     return {
       property: {
         lotplan: result.lot_plan,
@@ -328,31 +400,32 @@ export async function scrapeProperty(query) {
         lapRequirements: null,
         overlayRestrictions: null
       },
+      metrics: {
+        panelVisibleMs: timings.panelVisible ? (timings.panelVisible - timings.t0) : null,
+        panelPopulatedMs: timings.panelPopulated ? (timings.panelPopulated - timings.t0) : null,
+        totalMs: timings.done ? (timings.done - timings.t0) : null
+      },
       scrapedAt: new Date().toISOString()
     };
 
   } catch (error) {
     console.error('[BROWSERBASE ERROR]', error);
     result.error = error.message;
-    
+
     if (browser) {
-      try {
-        await browser.close();
-      } catch (e) {
-        console.error('[BROWSERBASE] Failed to close browser:', e);
-      }
+      try { await browser.close(); } catch (e) { console.error('[BROWSERBASE] Failed to close browser:', e); }
     }
-    
+
     throw new Error(`Scraping failed: ${error.message}`);
   }
 }
 
-/**
- * Debug version
- */
+/* =========================
+ * DEBUG SCRAPER
+ * ========================= */
+
 export async function scrapePropertyDebug(query) {
   let browser = null;
-  
   try {
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
@@ -368,31 +441,24 @@ export async function scrapePropertyDebug(query) {
 
     const session = await sessionResponse.json();
     const wsUrl = `wss://connect.browserbase.com?apiKey=${BROWSERBASE_API_KEY}&sessionId=${session.id}`;
-    
+
     browser = await chromium.connectOverCDP(wsUrl);
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
-    
-    console.log(`[DEBUG] Navigating to ${CITYPLAN_URL}...`);
+
     await page.goto(CITYPLAN_URL, { waitUntil: 'networkidle', timeout: 90000 });
-    
-    console.log(`[DEBUG] Waiting for loading screen...`);
     await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {});
-    
-    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
-      state: 'visible', 
-      timeout: 30000 
-    }).catch(() => {});
-    
-    await page.waitForTimeout(5000);
-    
+    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { state: 'visible', timeout: 30000 }).catch(() => {});
+
+    await page.waitForTimeout(1500);
+
     const title = await page.title();
     const url = page.url();
     const bodyText = await page.locator("body").innerText();
     const html = await page.content();
-    
+
     await browser.close();
-    
+
     return {
       url,
       title,
