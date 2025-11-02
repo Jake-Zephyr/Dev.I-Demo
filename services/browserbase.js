@@ -248,18 +248,19 @@ export async function scrapeProperty(query) {
       try {
         // Wait for either zone text or lot/plan text to appear (proves content loaded)
         await Promise.race([
-          page.waitForSelector('text=/Lot\\/Plan/i', { timeout: 10000 }),
-          page.waitForSelector('text=/density|zone|overlay/i', { timeout: 10000 })
+          page.waitForSelector('text=/Lot\\/Plan/i', { timeout: 15000 }),
+          page.waitForSelector('text=/density|zone|overlay/i', { timeout: 15000 })
         ]);
         console.log(`[BROWSERBASE] Property content detected!`);
-        await page.waitForTimeout(2000); // Buffer for rest of content
+        await page.waitForTimeout(3000); // Buffer for rest of content
       } catch (e) {
-        console.log(`[BROWSERBASE] Content timeout, using fallback...`);
-        await page.waitForTimeout(5000);
+        console.log(`[BROWSERBASE] Content timeout, using longer fallback...`);
+        // Wait longer for address searches since they're slower
+        await page.waitForTimeout(8000);
       }
     } catch (e) {
       console.log(`[BROWSERBASE] Navigation timeout, using fallback wait...`);
-      await page.waitForTimeout(10000);
+      await page.waitForTimeout(12000);
     }
     
     // Step 6: Extract area and lot/plan
@@ -273,13 +274,23 @@ export async function scrapeProperty(query) {
     try {
       await page.waitForSelector(
         "text=/density residential|residential zone|industry|centre|rural/i",
-        { timeout: 15000 }
+        { timeout: 20000 }
       );
       console.log(`[BROWSERBASE] Zone info detected!`);
-      await page.waitForTimeout(1000); // Small buffer for overlays to load
+      
+      // Wait specifically for overlays section (it loads last)
+      console.log(`[BROWSERBASE] Waiting for overlays section...`);
+      try {
+        await page.waitForSelector('text=/Overlays/i', { timeout: 10000 });
+        console.log(`[BROWSERBASE] Overlays section detected!`);
+        await page.waitForTimeout(2000); // Buffer for overlay list to populate
+      } catch (e) {
+        console.log(`[BROWSERBASE] Overlays section not found, continuing...`);
+        await page.waitForTimeout(2000);
+      }
     } catch (e) {
-      console.log(`[BROWSERBASE] Zone not found, continuing anyway...`);
-      await page.waitForTimeout(2000);
+      console.log(`[BROWSERBASE] Zone not found, waiting anyway...`);
+      await page.waitForTimeout(5000);
     }
     
     // Step 8: Extract all text
