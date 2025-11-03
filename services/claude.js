@@ -1,6 +1,7 @@
 // services/claude.js
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './browserbase.js';
+import { searchPlanningScheme } from './rag-simple.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -23,13 +24,13 @@ export async function getAdvisory(userQuery, conversationHistory = []) {
     // Define the tool for property lookup
     const tools = [{
       name: 'get_property_info',
-      description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. Use this when the user asks about a specific property, lot/plan number, or address.',
+      description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable. If the user provides an address, ask them for the lot/plan number if they have it, or explain that lot/plan gives more accurate results.',
       input_schema: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Lot/plan number (e.g., "12RP39932") or street address (e.g., "22 Mary Avenue, Broadbeach")'
+            description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
           }
         },
         required: ['query']
@@ -59,11 +60,17 @@ CORE EXPERTISE:
 - Property investment advice for Gold Coast
 
 RESPONSE GUIDELINES:
-1. For Gold Coast property questions (lot/plan numbers or addresses): Use the get_property_info tool to look up data and provide comprehensive planning advice including:
-   - What can be built
-   - Zoning requirements
-   - Density and height limits
-   - Overlays and special requirements
+1. For Gold Coast property questions (lot/plan numbers or addresses): Use the get_property_info tool to look up data. The tool returns:
+   - Property details (zone, density, area, overlays)
+   - planningSchemeContext: Array of relevant sections from the official Gold Coast City Plan
+   
+   IMPORTANT: The planningSchemeContext contains the actual planning scheme rules and requirements. Use this information to provide accurate, specific advice. Quote relevant sections when explaining requirements.
+   
+   Provide comprehensive planning advice including:
+   - What can be built (based on the planning scheme sections)
+   - Specific zoning requirements (from the scheme text)
+   - Density and height limits (as stated in the scheme)
+   - Overlay requirements (from the retrieved context)
    - Next steps
 
 2. For general Gold Coast questions (mayor, council, local info, weather, etc.): Answer briefly and helpfully, then offer to help with property matters.
@@ -102,6 +109,17 @@ User query: ${userQuery}`
       const propertyData = await scrapeProperty(toolUse.input.query);
       console.log('[CLAUDE] Property data retrieved');
 
+      // Search for relevant planning scheme information
+      console.log('[CLAUDE] Searching planning scheme database...');
+      const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
+      console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
+      
+      // Combine property data with planning context
+      const enrichedData = {
+        ...propertyData,
+        planningSchemeContext: planningContext
+      };
+
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
@@ -123,7 +141,7 @@ User query: ${userQuery}`
             content: [{
               type: 'tool_result',
               tool_use_id: toolUse.id,
-              content: JSON.stringify(propertyData, null, 2)
+              content: JSON.stringify(enrichedData, null, 2)
             }]
           }
         ]
