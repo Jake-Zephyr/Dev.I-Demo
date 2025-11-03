@@ -121,12 +121,10 @@ app.post('/api/advise-stream', async (req, res) => {
     
     sendProgress('Scraping property information...');
     
-    // Get advisory response
-    const response = await getAdvisory(query, conversationHistory);
+    // Get advisory response (this calls scraper and RAG internally)
+    const response = await getAdvisory(query, conversationHistory, sendProgress);
     
-    sendProgress('Analyzing zoning regulations...');
-    
-    sendProgress('Compiling response...');
+    sendProgress('Finalizing report...');
     
     // Send final result
     res.write(`data: ${JSON.stringify({ 
