@@ -11,7 +11,7 @@ const anthropic = new Anthropic({
  * Get planning advisory from Claude with function calling
  * Claude will automatically call the scraper when needed
  */
-export async function getAdvisory(userQuery, conversationHistory = []) {
+export async function getAdvisory(userQuery, conversationHistory = [], sendProgress = null) {
   try {
     console.log('=====================================');
     console.log('[CLAUDE] New advisory request');
@@ -106,13 +106,17 @@ User query: ${userQuery}`
       console.log('=====================================');
 
       // Call the scraper
-      const propertyData = await scrapeProperty(toolUse.input.query);
+      if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
+      const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
       console.log('[CLAUDE] Property data retrieved');
 
       // Search for relevant planning scheme information
+      if (sendProgress) sendProgress('🧠 Searching planning regulations database...');
       console.log('[CLAUDE] Searching planning scheme database...');
       const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
       console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
+      
+      if (sendProgress) sendProgress('✍️ Compiling comprehensive property report...');
       
       // Combine property data with planning context
       const enrichedData = {
