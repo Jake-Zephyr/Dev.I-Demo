@@ -239,47 +239,61 @@ export async function scrapeProperty(query) {
     // Step 5: Select first result
     console.log(`[BROWSERBASE] Selecting first result...`);
     await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(1000); // Increased from 500ms
+    await page.waitForTimeout(1000);
     
-    // DEBUG: Check if something is highlighted
     console.log(`[BROWSERBASE] Pressing Enter to select...`);
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(2000); // Wait for navigation to start
     
-    // Wait for navigation to complete (smart wait!)
-    console.log(`[BROWSERBASE] Waiting for property page to load...`);
+    // CRITICAL: Wait longer for property page to fully load
+    // Addresses with multiple units can take 10+ seconds
+    console.log(`[BROWSERBASE] Waiting for property data to load...`);
+    await page.waitForTimeout(10000); // Wait a full 10 seconds
+    
+    // Wait for navigation to complete
+    console.log(`[BROWSERBASE] Waiting for property panel...`);
     try {
-      // Wait for URL to change or property panel to appear
-      await Promise.race([
-        page.waitForURL(/.*/, { waitUntil: 'domcontentloaded', timeout: 15000 }),
-        page.waitForSelector('#isoplan-property-detail', { state: 'visible', timeout: 15000 })
-      ]);
+      await page.waitForSelector('#isoplan-property-detail', { 
+        state: 'visible', 
+        timeout: 20000 
+      });
       
       // DEBUG: Log current URL and page title
       const currentUrl = page.url();
       const pageTitle = await page.title();
       console.log(`[BROWSERBASE] Current URL: ${currentUrl}`);
       console.log(`[BROWSERBASE] Page title: ${pageTitle}`);
-      console.log(`[BROWSERBASE] Property page loaded!`);
+      console.log(`[BROWSERBASE] Property panel visible!`);
       
-      // CRITICAL: Wait for actual content to populate
-      console.log(`[BROWSERBASE] Waiting for property content to populate...`);
-      try {
-        // Wait for either zone text or lot/plan text to appear (proves content loaded)
-        await Promise.race([
-          page.waitForSelector('text=/Lot\\/Plan/i', { timeout: 15000 }),
-          page.waitForSelector('text=/density|zone|overlay/i', { timeout: 15000 })
-        ]);
-        console.log(`[BROWSERBASE] Property content detected!`);
-        await page.waitForTimeout(3000); // Buffer for rest of content
-      } catch (e) {
-        console.log(`[BROWSERBASE] Content timeout, using longer fallback...`);
-        // Wait longer for address searches since they're slower
-        await page.waitForTimeout(8000);
+      // SMART POLLING: Check every second if content loaded (max 15 seconds)
+      console.log(`[BROWSERBASE] Smart polling for content to load...`);
+      let contentLoaded = false;
+      const maxPolls = 15; // Max 15 seconds
+      
+      for (let i = 0; i < maxPolls; i++) {
+        // Check if we have substantial content
+        const bodyText = await page.locator("body").innerText();
+        const hasLotPlan = /Lot\/Plan/i.test(bodyText);
+        const hasZone = /density|zone|overlay/i.test(bodyText);
+        const hasSubstantialContent = bodyText.length > 800; // At least 800 chars
+        
+        if ((hasLotPlan || hasZone) && hasSubstantialContent) {
+          console.log(`[BROWSERBASE] Content detected after ${i + 1} seconds! (${bodyText.length} chars)`);
+          contentLoaded = true;
+          await page.waitForTimeout(2000); // Small buffer for final bits
+          break;
+        }
+        
+        console.log(`[BROWSERBASE] Poll ${i + 1}/${maxPolls}: ${bodyText.length} chars, waiting...`);
+        await page.waitForTimeout(1000); // Wait 1 second before next check
       }
+      
+      if (!contentLoaded) {
+        console.log(`[BROWSERBASE] Content polling timed out, proceeding anyway...`);
+      }
+      
     } catch (e) {
-      console.log(`[BROWSERBASE] Navigation timeout, using fallback wait...`);
-      await page.waitForTimeout(12000);
+      console.log(`[BROWSERBASE] Property panel timeout, using fallback...`);
+      await page.waitForTimeout(10000);
     }
     
     // Step 6: Extract area and lot/plan
@@ -288,28 +302,54 @@ export async function scrapeProperty(query) {
     result.area_sqm = area;
     result.lot_plan = lotplan;
     
-    // Step 7: Wait for zone info to appear (smart wait!)
-    console.log(`[BROWSERBASE] Waiting for zone information...`);
-    try {
-      await page.waitForSelector(
-        "text=/density residential|residential zone|industry|centre|rural/i",
-        { timeout: 20000 }
-      );
-      console.log(`[BROWSERBASE] Zone info detected!`);
+    // Step 7: Smart polling for zone and overlay information
+    console.log(`[BROWSERBASE] Smart polling for zone/overlay data...`);
+    let zoneLoaded = false;
+    const maxZonePolls = 12; // Max 12 seconds
+    let lastOverlayCount = 0;
+    let stableCount = 0;
+    
+    for (let i = 0; i < maxZonePolls; i++) {
+      const bodyText = await page.locator("body").innerText();
+      const hasZone = /density residential|residential zone|industry|centre|rural/i.test(bodyText);
+      const hasOverlays = /Overlays/i.test(bodyText);
       
-      // Wait specifically for overlays section (it loads last)
-      console.log(`[BROWSERBASE] Waiting for overlays section...`);
-      try {
-        await page.waitForSelector('text=/Overlays/i', { timeout: 10000 });
-        console.log(`[BROWSERBASE] Overlays section detected!`);
-        await page.waitForTimeout(2000); // Buffer for overlay list to populate
-      } catch (e) {
-        console.log(`[BROWSERBASE] Overlays section not found, continuing...`);
-        await page.waitForTimeout(2000);
+      // Count how many overlay lines we have
+      const overlayMatch = bodyText.match(/Overlays(.*?)(?:LGIP|Local Government|$)/is);
+      let currentOverlayCount = 0;
+      if (overlayMatch) {
+        const lines = overlayMatch[1].split('\n').filter(ln => ln.trim().length > 10);
+        currentOverlayCount = lines.length;
       }
-    } catch (e) {
-      console.log(`[BROWSERBASE] Zone not found, waiting anyway...`);
-      await page.waitForTimeout(5000);
+      
+      if (hasZone && hasOverlays) {
+        // Check if overlay count is stable (not increasing anymore)
+        if (currentOverlayCount === lastOverlayCount && currentOverlayCount > 0) {
+          stableCount++;
+          if (stableCount >= 2) { // Stable for 2 checks = done loading
+            console.log(`[BROWSERBASE] Zone and overlays fully loaded after ${i + 1} seconds! (${currentOverlayCount} overlays)`);
+            zoneLoaded = true;
+            await page.waitForTimeout(1000); // Small final buffer
+            break;
+          }
+        } else {
+          stableCount = 0; // Reset if still changing
+        }
+        
+        console.log(`[BROWSERBASE] Poll ${i + 1}: Zone found, ${currentOverlayCount} overlays (stable: ${stableCount}/2)`);
+        lastOverlayCount = currentOverlayCount;
+      } else if (hasZone) {
+        console.log(`[BROWSERBASE] Poll ${i + 1}: Zone found, waiting for overlays...`);
+      } else {
+        console.log(`[BROWSERBASE] Poll ${i + 1}: Waiting for zone...`);
+      }
+      
+      await page.waitForTimeout(1000);
+    }
+    
+    if (!zoneLoaded) {
+      console.log(`[BROWSERBASE] Zone/overlay polling timed out, proceeding anyway...`);
+      await page.waitForTimeout(1000);
     }
     
     // Step 8: Extract all text
