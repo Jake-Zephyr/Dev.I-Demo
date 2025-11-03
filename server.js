@@ -92,6 +92,58 @@ app.get('/api/test-browserbase', async (req, res) => {
   }
 });
 
+// STREAMING advisory endpoint (with real-time progress updates)
+app.post('/api/advise-stream', async (req, res) => {
+  // Set headers for Server-Sent Events
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  
+  const sendProgress = (message) => {
+    res.write(`data: ${JSON.stringify({ type: 'progress', message })}\n\n`);
+  };
+  
+  try {
+    const { query, conversationHistory } = req.body;
+    
+    if (!query) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Query is required' })}\n\n`);
+      res.end();
+      return;
+    }
+    
+    console.log('[ADVISE-STREAM] Query:', query);
+    
+    sendProgress('Parsing query parameters...');
+    
+    sendProgress('Connecting to Gold Coast planning database...');
+    
+    sendProgress('Scraping property information...');
+    
+    // Get advisory response
+    const response = await getAdvisory(query, conversationHistory);
+    
+    sendProgress('Analyzing zoning regulations...');
+    
+    sendProgress('Compiling response...');
+    
+    // Send final result
+    res.write(`data: ${JSON.stringify({ 
+      type: 'complete', 
+      data: response,
+      timestamp: new Date().toISOString()
+    })}\n\n`);
+    
+    res.end();
+    
+  } catch (error) {
+    console.error('[ADVISE-STREAM ERROR]', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
+  }
+});
+
 // Main advisory endpoint (Claude + Scraper)
 app.post('/api/advise', async (req, res) => {
   try {
