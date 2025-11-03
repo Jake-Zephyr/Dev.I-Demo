@@ -150,7 +150,7 @@ function extractZoneDensityOverlays(panelText) {
 /**
  * Main scraper function
  */
-export async function scrapeProperty(query) {
+export async function scrapeProperty(query, sendProgress = null) {
   let browser = null;
   
   const { type: queryType, cleaned: cleanedQuery } = detectQueryType(query);
@@ -158,6 +158,7 @@ export async function scrapeProperty(query) {
   // Log address formatting
   if (queryType === "address" && cleanedQuery !== query) {
     console.log(`[BROWSERBASE] Address formatted: "${query}" → "${cleanedQuery}"`);
+    if (sendProgress) sendProgress(`Formatted address: ${cleanedQuery}`);
   }
   
   const result = {
@@ -175,8 +176,10 @@ export async function scrapeProperty(query) {
   
   try {
     console.log(`[BROWSERBASE] Starting scrape for: ${query} (${queryType})`);
+    if (sendProgress) sendProgress(`🔍 Searching for: ${cleanedQuery}...`);
     
     // Step 1: Create BrowserBase session with proxy and stealth
+    if (sendProgress) sendProgress('🌐 Connecting to browser...');
     const sessionResponse = await fetch('https://www.browserbase.com/v1/sessions', {
       method: 'POST',
       headers: {
@@ -209,6 +212,7 @@ export async function scrapeProperty(query) {
 
     // Step 3: Navigate and wait for page to load
     console.log(`[BROWSERBASE] Navigating to ${CITYPLAN_URL}...`);
+    if (sendProgress) sendProgress('📄 Loading Gold Coast City Plan...');
     await page.goto(CITYPLAN_URL, { 
       waitUntil: 'networkidle', 
       timeout: 90000
@@ -216,17 +220,46 @@ export async function scrapeProperty(query) {
     
     // Wait for loading screen to disappear
     console.log(`[BROWSERBASE] Waiting for loading screen to disappear...`);
+    if (sendProgress) sendProgress('⏳ Waiting for page to load...');
     await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
       console.log(`[BROWSERBASE] Loading screen timeout, continuing...`);
     });
     
-    // Wait for search box
-    await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
-      state: 'visible', 
-      timeout: 30000 
-    });
+    // Additional wait for page to settle
+    await page.waitForTimeout(3000);
+    
+    // Check page state before waiting for search box
+    const pageUrl = page.url();
+    const pageTitle = await page.title();
+    console.log(`[BROWSERBASE] Current URL: ${pageUrl}`);
+    console.log(`[BROWSERBASE] Page title: ${pageTitle}`);
+    
+    // Wait for search box with better error handling
+    try {
+      await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
+        state: 'visible', 
+        timeout: 60000  // Increased to 60 seconds
+      });
+      console.log(`[BROWSERBASE] Search box found!`);
+    } catch (e) {
+      // Debug: Check what's actually on the page
+      console.log(`[BROWSERBASE] Search box not found, checking page content...`);
+      const bodyText = await page.locator("body").innerText();
+      console.log(`[BROWSERBASE] Page text (first 500 chars): ${bodyText.substring(0, 500)}`);
+      
+      // Try waiting a bit more
+      console.log(`[BROWSERBASE] Waiting additional 10 seconds...`);
+      await page.waitForTimeout(10000);
+      
+      // Try one more time
+      await page.waitForSelector('input[placeholder*="address" i], input[placeholder*="Lot" i]', { 
+        state: 'visible', 
+        timeout: 30000 
+      });
+    }
     
     console.log(`[BROWSERBASE] App fully loaded! Searching for ${cleanedQuery}...`);
+    if (sendProgress) sendProgress(`🔎 Searching for property: ${cleanedQuery}...`);
 
     // Step 4: Handle search based on query type
     if (queryType === "lotplan") {
@@ -349,12 +382,14 @@ export async function scrapeProperty(query) {
     
     // Step 6: Extract area and lot/plan
     console.log(`[BROWSERBASE] Extracting property details...`);
+    if (sendProgress) sendProgress('📊 Extracting property details...');
     const { area, lotplan } = await extractAreaAndLotplan(page);
     result.area_sqm = area;
     result.lot_plan = lotplan;
     
     // Step 7: Smart polling for zone and overlay information
     console.log(`[BROWSERBASE] Smart polling for zone/overlay data...`);
+    if (sendProgress) sendProgress('🏗️ Analyzing zoning and overlays...');
     let zoneLoaded = false;
     const maxZonePolls = 12; // Max 12 seconds
     let lastOverlayCount = 0;
