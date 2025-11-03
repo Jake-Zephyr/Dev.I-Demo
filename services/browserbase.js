@@ -221,6 +221,15 @@ export async function scrapeProperty(query) {
           timeout: 8000 
         });
         console.log(`[BROWSERBASE] Autocomplete appeared!`);
+        
+        // DEBUG: Log what autocomplete options are available
+        const options = await page.locator('[role="option"], [class*="suggestion"] div, [class*="autocomplete"] li').allTextContents();
+        console.log(`[BROWSERBASE] Autocomplete options found: ${options.length}`);
+        if (options.length > 0) {
+          console.log(`[BROWSERBASE] First 3 options: ${options.slice(0, 3).join(' | ')}`);
+        }
+        
+        await page.waitForTimeout(1000); // Wait for all options to load
       } catch (e) {
         console.log(`[BROWSERBASE] No autocomplete found, continuing anyway...`);
       }
@@ -230,8 +239,12 @@ export async function scrapeProperty(query) {
     // Step 5: Select first result
     console.log(`[BROWSERBASE] Selecting first result...`);
     await page.keyboard.press("ArrowDown");
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000); // Increased from 500ms
+    
+    // DEBUG: Check if something is highlighted
+    console.log(`[BROWSERBASE] Pressing Enter to select...`);
     await page.keyboard.press("Enter");
+    await page.waitForTimeout(2000); // Wait for navigation to start
     
     // Wait for navigation to complete (smart wait!)
     console.log(`[BROWSERBASE] Waiting for property page to load...`);
@@ -241,6 +254,12 @@ export async function scrapeProperty(query) {
         page.waitForURL(/.*/, { waitUntil: 'domcontentloaded', timeout: 15000 }),
         page.waitForSelector('#isoplan-property-detail', { state: 'visible', timeout: 15000 })
       ]);
+      
+      // DEBUG: Log current URL and page title
+      const currentUrl = page.url();
+      const pageTitle = await page.title();
+      console.log(`[BROWSERBASE] Current URL: ${currentUrl}`);
+      console.log(`[BROWSERBASE] Page title: ${pageTitle}`);
       console.log(`[BROWSERBASE] Property page loaded!`);
       
       // CRITICAL: Wait for actual content to populate
