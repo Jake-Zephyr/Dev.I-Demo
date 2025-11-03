@@ -10,6 +10,49 @@ if (!BROWSERBASE_API_KEY || !BROWSERBASE_PROJECT_ID) {
 }
 
 /**
+ * Format address to ensure proper comma placement
+ * Examples:
+ * "7 sixth avenue miami" → "7 sixth avenue, miami"
+ * "7 Sixth Avenue Miami" → "7 Sixth Avenue, Miami"
+ * "7 sixth avenue, miami" → "7 sixth avenue, miami" (already correct)
+ */
+function formatAddress(address) {
+  const cleaned = address.trim();
+  
+  // List of Gold Coast suburbs (add more as needed)
+  const suburbs = [
+    'miami', 'mermaid beach', 'mermaid waters', 'broadbeach', 'surfers paradise',
+    'southport', 'main beach', 'burleigh heads', 'palm beach', 'currumbin',
+    'coolangatta', 'robina', 'varsity lakes', 'ashmore', 'benowa', 'bundall',
+    'clear island waters', 'helensvale', 'hope island', 'labrador', 'merrimac',
+    'molendinar', 'parkwood', 'runaway bay', 'biggera waters', 'coombabah',
+    'arundel', 'nerang', 'highland park', 'gaven', 'oxenford', 'pacific pines',
+    'coomera', 'upper coomera', 'pimpama', 'ormeau', 'jacobs well'
+  ];
+  
+  // Check if address already has a comma
+  if (cleaned.includes(',')) {
+    return cleaned;
+  }
+  
+  // Try to find suburb in the address and add comma before it
+  const lowerAddress = cleaned.toLowerCase();
+  
+  for (const suburb of suburbs) {
+    const suburbIndex = lowerAddress.lastIndexOf(suburb);
+    if (suburbIndex > 0) {
+      // Found suburb, add comma before it
+      const beforeSuburb = cleaned.substring(0, suburbIndex).trim();
+      const suburbPart = cleaned.substring(suburbIndex).trim();
+      return `${beforeSuburb}, ${suburbPart}`;
+    }
+  }
+  
+  // If no suburb found, return as-is
+  return cleaned;
+}
+
+/**
  * Detect if query is an address or lot/plan
  */
 function detectQueryType(query) {
@@ -18,7 +61,10 @@ function detectQueryType(query) {
   if (match) {
     return { type: "lotplan", cleaned: match[1].toUpperCase() };
   }
-  return { type: "address", cleaned: query.trim() };
+  
+  // Format address to ensure proper comma placement
+  const formatted = formatAddress(query);
+  return { type: "address", cleaned: formatted };
 }
 
 /**
@@ -108,6 +154,11 @@ export async function scrapeProperty(query) {
   let browser = null;
   
   const { type: queryType, cleaned: cleanedQuery } = detectQueryType(query);
+  
+  // Log address formatting
+  if (queryType === "address" && cleanedQuery !== query) {
+    console.log(`[BROWSERBASE] Address formatted: "${query}" → "${cleanedQuery}"`);
+  }
   
   const result = {
     query,
