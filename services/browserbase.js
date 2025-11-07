@@ -148,9 +148,74 @@ function extractZoneDensityOverlays(panelText) {
 }
 
 /**
- * Main scraper function
+ * Main scraper function with retry logic for incomplete data
  */
 export async function scrapeProperty(query, sendProgress = null) {
+  const maxRetries = 2; // Try up to 3 times total (1 initial + 2 retries)
+  let lastResult = null;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`[BROWSERBASE] ========================================`);
+        console.log(`[BROWSERBASE] RETRY ${attempt}/${maxRetries} - Incomplete data detected`);
+        console.log(`[BROWSERBASE] ========================================`);
+        if (sendProgress) sendProgress(`🔄 Data incomplete, retrying... (attempt ${attempt + 1}/${maxRetries + 1})`);
+        await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3s before retry
+      }
+      
+      const result = await scrapePropertyInternal(query, sendProgress);
+      lastResult = result;
+      
+      // Check if we got all critical data
+      const hasLotPlan = !!result.property?.lotplan;
+      const hasZone = !!result.property?.zone;
+      const hasArea = !!result.property?.area;
+      const hasOverlays = result.property?.overlays && result.property.overlays.length > 0;
+      
+      console.log(`[BROWSERBASE] Data completeness check:`);
+      console.log(`  - Lot/Plan: ${hasLotPlan ? '✓' : '✗'} ${result.property?.lotplan || 'missing'}`);
+      console.log(`  - Zone: ${hasZone ? '✓' : '✗'} ${result.property?.zone || 'missing'}`);
+      console.log(`  - Area: ${hasArea ? '✓' : '✗'} ${result.property?.area || 'missing'}`);
+      console.log(`  - Overlays: ${hasOverlays ? '✓' : '✗'} ${result.property?.overlays?.length || 0} found`);
+      
+      // We need at least lot/plan + zone + area to consider it complete
+      const isComplete = hasLotPlan && hasZone && hasArea;
+      
+      if (isComplete) {
+        console.log(`[BROWSERBASE] ✓ Complete data retrieved!`);
+        if (attempt > 0 && sendProgress) {
+          sendProgress(`✅ Successfully retrieved complete data on retry!`);
+        }
+        return result;
+      } else {
+        console.log(`[BROWSERBASE] ✗ Incomplete data - missing critical fields`);
+        
+        if (attempt < maxRetries) {
+          console.log(`[BROWSERBASE] Will retry...`);
+          continue; // Try again
+        } else {
+          console.log(`[BROWSERBASE] Max retries reached, returning partial data`);
+          if (sendProgress) sendProgress(`⚠️ Retrieved partial data after ${maxRetries + 1} attempts`);
+          return result; // Return whatever we got
+        }
+      }
+      
+    } catch (error) {
+      // For actual errors (not incomplete data), don't retry
+      console.error(`[BROWSERBASE ERROR]`, error.message);
+      throw error;
+    }
+  }
+  
+  // Fallback: return last result even if incomplete
+  return lastResult;
+}
+
+/**
+ * Internal scraper function (actual implementation)
+ */
+async function scrapePropertyInternal(query, sendProgress = null) {
   let browser = null;
   
   const { type: queryType, cleaned: cleanedQuery } = detectQueryType(query);
@@ -215,18 +280,18 @@ export async function scrapeProperty(query, sendProgress = null) {
     if (sendProgress) sendProgress('📄 Loading Gold Coast City Plan...');
     await page.goto(CITYPLAN_URL, { 
       waitUntil: 'networkidle', 
-      timeout: 90000
+      timeout: 120000  // Increased from 90s to 120s
     });
     
     // Wait for loading screen to disappear
     console.log(`[BROWSERBASE] Waiting for loading screen to disappear...`);
     if (sendProgress) sendProgress('⏳ Waiting for page to load...');
-    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 30000 }).catch(() => {
+    await page.waitForSelector('text=Loading City Plan', { state: 'hidden', timeout: 60000 }).catch(() => {
       console.log(`[BROWSERBASE] Loading screen timeout, continuing...`);
     });
     
     // Additional wait for page to settle
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);  // Increased from 3s to 5s
     
     // Check page state before waiting for search box
     const pageUrl = page.url();
@@ -391,7 +456,7 @@ export async function scrapeProperty(query, sendProgress = null) {
     console.log(`[BROWSERBASE] Smart polling for zone/overlay data...`);
     if (sendProgress) sendProgress('🏗️ Analyzing zoning and overlays...');
     let zoneLoaded = false;
-    const maxZonePolls = 12; // Max 12 seconds
+    const maxZonePolls = 20; // Increased from 12 to 20 (20 seconds total)
     let lastOverlayCount = 0;
     let stableCount = 0;
     
@@ -412,17 +477,17 @@ export async function scrapeProperty(query, sendProgress = null) {
         // Check if overlay count is stable (not increasing anymore)
         if (currentOverlayCount === lastOverlayCount && currentOverlayCount > 0) {
           stableCount++;
-          if (stableCount >= 2) { // Stable for 2 checks = done loading
+          if (stableCount >= 3) { // Increased from 2 to 3 for more confidence
             console.log(`[BROWSERBASE] Zone and overlays fully loaded after ${i + 1} seconds! (${currentOverlayCount} overlays)`);
             zoneLoaded = true;
-            await page.waitForTimeout(1000); // Small final buffer
+            await page.waitForTimeout(2000); // Extra buffer after stable
             break;
           }
         } else {
           stableCount = 0; // Reset if still changing
         }
         
-        console.log(`[BROWSERBASE] Poll ${i + 1}: Zone found, ${currentOverlayCount} overlays (stable: ${stableCount}/2)`);
+        console.log(`[BROWSERBASE] Poll ${i + 1}: Zone found, ${currentOverlayCount} overlays (stable: ${stableCount}/3)`);
         lastOverlayCount = currentOverlayCount;
       } else if (hasZone) {
         console.log(`[BROWSERBASE] Poll ${i + 1}: Zone found, waiting for overlays...`);
@@ -434,8 +499,9 @@ export async function scrapeProperty(query, sendProgress = null) {
     }
     
     if (!zoneLoaded) {
-      console.log(`[BROWSERBASE] Zone/overlay polling timed out, proceeding anyway...`);
-      await page.waitForTimeout(1000);
+      console.log(`[BROWSERBASE] Zone/overlay polling timed out after ${maxZonePolls}s, proceeding with available data...`);
+      // Still wait a bit more just in case
+      await page.waitForTimeout(3000);
     }
     
     // Step 8: Extract all text
@@ -462,7 +528,7 @@ export async function scrapeProperty(query, sendProgress = null) {
     }
     
     result.success = true;
-    console.log(`[BROWSERBASE] Scraping complete!`);
+    console.log(`[BROWSERBASE] Scraping attempt complete.`);
     
     // Step 11: Close browser
     await browser.close();
