@@ -57,13 +57,13 @@ class RateLimiter {
     const requestsLastMinute = requests.filter(r => r.timestamp > oneMinuteAgo).length;
     const requestsLastHour = requests.filter(r => r.timestamp > oneHourAgo).length;
     
-    // Rate limits
-    if (requestsLastMinute >= 3) {
-      return { allowed: false, reason: 'Too many requests (max 3/minute)' };
+    // Rate limits - adjusted for real users
+    if (requestsLastMinute >= 5) {  // 5 requests per minute (blocks rapid spam)
+      return { allowed: false, reason: 'Too many requests (max 5/minute). Please slow down.' };
     }
     
-    if (requestsLastHour >= 20) {
-      return { allowed: false, reason: 'Too many requests (max 20/hour)' };
+    if (requestsLastHour >= 50) {  // 50 requests per hour (reasonable for real users)
+      return { allowed: false, reason: 'Too many requests (max 50/hour). Take a break!' };
     }
     
     // Budget limits
