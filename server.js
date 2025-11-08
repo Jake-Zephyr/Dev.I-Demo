@@ -3,6 +3,12 @@ import express from 'express';
 import cors from 'cors';
 import { scrapeProperty } from './services/browserbase.js';
 import { getAdvisory } from './services/claude.js';
+import { 
+  rateLimitMiddleware, 
+  queryValidationMiddleware,
+  emergencyShutdownMiddleware,
+  getUsageStats 
+} from './middleware/protection.js';
 
 const app = express();
 
@@ -10,9 +16,25 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
+// Emergency shutdown check (first line of defense)
+app.use(emergencyShutdownMiddleware);
+
+// Trust proxy (for correct IP detection behind Railway)
+app.set('trust proxy', true);
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Usage stats endpoint (for monitoring your costs)
+app.get('/api/usage-stats', (req, res) => {
+  const stats = getUsageStats();
+  res.json({
+    success: true,
+    stats,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Direct scraper endpoint (for testing)
@@ -93,7 +115,7 @@ app.get('/api/test-browserbase', async (req, res) => {
 });
 
 // STREAMING advisory endpoint (with real-time progress updates)
-app.post('/api/advise-stream', async (req, res) => {
+app.post('/api/advise-stream', rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   // Set headers for Server-Sent Events
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -143,7 +165,7 @@ app.post('/api/advise-stream', async (req, res) => {
 });
 
 // Main advisory endpoint (Claude + Scraper)
-app.post('/api/advise', async (req, res) => {
+app.post('/api/advise', rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   try {
     console.log('=====================================');
     console.log('[ADVISE] NEW REQUEST');
