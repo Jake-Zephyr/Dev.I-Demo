@@ -156,6 +156,69 @@ app.get('/api/test-browserbase', async (req, res) => {
   }
 });
 
+// ===== NEW: DEDICATED OVERLAY CHECKER ENDPOINT =====
+// Simplified endpoint specifically for overlay checking
+app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { address, lga } = req.body;
+    
+    console.log('[OVERLAY-CHECK] Request received');
+    console.log('[OVERLAY-CHECK] Address:', address);
+    console.log('[OVERLAY-CHECK] LGA:', lga);
+    
+    // Validate input
+    if (!address || !lga) {
+      return res.status(400).json({
+        success: false,
+        error: 'Both address and LGA are required'
+      });
+    }
+    
+    // Only support Gold Coast for now
+    if (lga !== 'Gold Coast') {
+      return res.status(400).json({
+        success: false,
+        error: 'Only Gold Coast is currently supported'
+      });
+    }
+    
+    console.log('[OVERLAY-CHECK] Starting scrape...');
+    
+    // Scrape property data
+    const propertyData = await scrapeProperty(address);
+    
+    console.log('[OVERLAY-CHECK] Scrape complete');
+    console.log('[OVERLAY-CHECK] Success:', propertyData?.success);
+    console.log('[OVERLAY-CHECK] Overlay count:', propertyData?.property?.overlays?.length || 0);
+    
+    if (!propertyData?.success) {
+      return res.status(404).json({
+        success: false,
+        error: 'Property not found. Please check the address and try again.'
+      });
+    }
+    
+    // Return property data with overlays
+    res.json({
+      success: true,
+      property: {
+        address: propertyData.property?.address || address,
+        lotplan: propertyData.property?.lotplan || 'N/A',
+        overlays: propertyData.property?.overlays || [],
+        overlayCount: propertyData.property?.overlays?.length || 0
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('[OVERLAY-CHECK ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: 'Unable to fetch overlays. Please try again.'
+    });
+  }
+});
+
 // STREAMING advisory endpoint (with real-time progress updates)
 app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   // Set headers for Server-Sent Events
@@ -192,19 +255,23 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
         if (!propertyData?.success) {
           res.write(`data: ${JSON.stringify({ 
             type: 'error', 
-            message: 'Property not found' 
+            message: 'Property not found. Please check the address and try again.' 
           })}\n\n`);
           res.end();
           return;
         }
         
-        // Return ONLY overlays
+        sendProgress('✅ Overlays retrieved successfully');
+        
+        // Return overlays data
         res.write(`data: ${JSON.stringify({ 
           type: 'complete',
           propertyData: {
             property: {
+              address: propertyData.property?.address || query,
+              lotplan: propertyData.property?.lotplan || 'N/A',
               overlays: propertyData.property?.overlays || [],
-              address: propertyData.property?.address || query
+              overlayCount: propertyData.property?.overlays?.length || 0
             }
           }
         })}\n\n`);
@@ -342,6 +409,8 @@ app.listen(PORT, () => {
   console.log(`   GET  /health`);
   console.log(`   GET  /api/scrape/:query`);
   console.log(`   POST /api/advise`);
+  console.log(`   POST /api/advise-stream`);
+  console.log(`   POST /api/check-overlays  ⭐ NEW`);
 });
 
 export default app;
