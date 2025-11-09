@@ -169,7 +169,7 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
   };
   
   try {
-    const { query, conversationHistory } = req.body;
+    const { query, conversationHistory, requestType } = req.body;
     
     if (!query) {
       res.write(`data: ${JSON.stringify({ type: 'error', message: 'Query is required' })}\n\n`);
@@ -178,7 +178,52 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     }
     
     console.log('[ADVISE-STREAM] Query:', query);
+    console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
     
+    // OVERLAY-ONLY MODE: Just scrape overlays, skip Claude/RAG
+    if (requestType === 'overlays-only') {
+      console.log('[ADVISE-STREAM] Overlay-only mode activated');
+      
+      sendProgress('📍 Searching Gold Coast City Plan...');
+      
+      try {
+        const propertyData = await scrapeProperty(query, sendProgress);
+        
+        if (!propertyData?.success) {
+          res.write(`data: ${JSON.stringify({ 
+            type: 'error', 
+            message: 'Property not found' 
+          })}\n\n`);
+          res.end();
+          return;
+        }
+        
+        // Return ONLY overlays
+        res.write(`data: ${JSON.stringify({ 
+          type: 'complete',
+          propertyData: {
+            property: {
+              overlays: propertyData.property?.overlays || [],
+              address: propertyData.property?.address || query
+            }
+          }
+        })}\n\n`);
+        
+        res.end();
+        return;
+        
+      } catch (error) {
+        console.error('[ADVISE-STREAM] Overlay scraping failed:', error.message);
+        res.write(`data: ${JSON.stringify({ 
+          type: 'error', 
+          message: 'Unable to fetch overlays. Please try again.' 
+        })}\n\n`);
+        res.end();
+        return;
+      }
+    }
+    
+    // STANDARD MODE: Full advisory with Claude + RAG
     sendProgress('Parsing query parameters...');
     
     sendProgress('Connecting to Gold Coast planning database...');
@@ -200,8 +245,25 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     res.end();
     
   } catch (error) {
-    console.error('[ADVISE-STREAM ERROR]', error);
-    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    console.error('[ADVISE-STREAM ERROR]', error.message);
+    
+    // Check if it's an Anthropic overload error
+    const isOverloaded = error.message?.includes('529') || 
+                         error.message?.includes('overloaded') ||
+                         error.message?.includes('Overloaded');
+    
+    if (isOverloaded) {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error', 
+        message: "Dev.i's server is overloaded. Please ask your question again." 
+      })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error', 
+        message: error.message 
+      })}\n\n`);
+    }
+    
     res.end();
   }
 });
@@ -255,9 +317,17 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
   } catch (error) {
     console.error('[ADVISE ERROR]', error);
     console.error('[ADVISE ERROR] Stack:', error.stack);
-    res.status(500).json({
+    
+    // Check if it's an Anthropic overload error
+    const isOverloaded = error.message?.includes('529') || 
+                         error.message?.includes('overloaded') ||
+                         error.message?.includes('Overloaded');
+    
+    res.status(isOverloaded ? 503 : 500).json({
       success: false,
-      error: error.message
+      error: isOverloaded 
+        ? "Dev.i's server is overloaded. Please ask your question again." 
+        : error.message
     });
   }
 });
