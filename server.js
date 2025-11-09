@@ -188,26 +188,48 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     const propertyData = await scrapeProperty(address);
     
     console.log('[OVERLAY-CHECK] Scrape complete');
-    console.log('[OVERLAY-CHECK] Success:', propertyData?.success);
+    console.log('[OVERLAY-CHECK] Full response:', JSON.stringify(propertyData, null, 2));
+    console.log('[OVERLAY-CHECK] Success flag:', propertyData?.success);
+    console.log('[OVERLAY-CHECK] Has property data:', !!propertyData?.property);
     console.log('[OVERLAY-CHECK] Overlay count:', propertyData?.property?.overlays?.length || 0);
     
-    if (!propertyData?.success) {
-      return res.status(404).json({
-        success: false,
-        error: 'Property not found. Please check the address and try again.'
+    // MORE FORGIVING: Accept if we have property data with overlays, even if success isn't explicitly true
+    if (propertyData?.property?.overlays && propertyData.property.overlays.length > 0) {
+      console.log('[OVERLAY-CHECK] ✅ Found overlays:', propertyData.property.overlays.length);
+      
+      return res.json({
+        success: true,
+        property: {
+          address: propertyData.property.address || address,
+          lotplan: propertyData.property.lotplan || 'N/A',
+          overlays: propertyData.property.overlays,
+          overlayCount: propertyData.property.overlays.length
+        },
+        timestamp: new Date().toISOString()
       });
     }
     
-    // Return property data with overlays
-    res.json({
-      success: true,
-      property: {
-        address: propertyData.property?.address || address,
-        lotplan: propertyData.property?.lotplan || 'N/A',
-        overlays: propertyData.property?.overlays || [],
-        overlayCount: propertyData.property?.overlays?.length || 0
-      },
-      timestamp: new Date().toISOString()
+    // If we got SOME data (zone, address, etc) but no overlays
+    if (propertyData?.property) {
+      console.log('[OVERLAY-CHECK] ⚠️ Property found but no overlays');
+      
+      return res.json({
+        success: true,
+        property: {
+          address: propertyData.property.address || address,
+          lotplan: propertyData.property.lotplan || 'N/A',
+          overlays: [],
+          overlayCount: 0
+        },
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Complete failure - no property data at all
+    console.log('[OVERLAY-CHECK] ❌ Property not found');
+    return res.status(404).json({
+      success: false,
+      error: 'Property not found. Please check the address and try again.'
     });
     
   } catch (error) {
