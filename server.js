@@ -9,11 +9,30 @@ import {
   emergencyShutdownMiddleware,
   getUsageStats 
 } from './middleware/protection.js';
+import { apiKeyAuthMiddleware } from './middleware/auth.js';
 
 const app = express();
 
 // Middleware
-app.use(cors());
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',') 
+  : ['*']; // Default: allow all (set ALLOWED_ORIGINS in Railway!)
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log(`[CORS] Blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json({ limit: '2mb' }));
 
 // Emergency shutdown check (first line of defense)
@@ -21,6 +40,29 @@ app.use(emergencyShutdownMiddleware);
 
 // Trust proxy (for correct IP detection behind Railway)
 app.set('trust proxy', true);
+
+// IP Blocklist middleware
+const blockedIPs = new Set(
+  (process.env.BLOCKED_IPS || '').split(',').filter(ip => ip.trim())
+);
+
+app.use((req, res, next) => {
+  if (blockedIPs.has(req.ip)) {
+    console.log(`[BLOCKED] Request from banned IP: ${req.ip}`);
+    return res.status(403).json({
+      error: 'Access denied',
+      message: 'Your IP has been blocked'
+    });
+  }
+  next();
+});
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.path} - IP: ${req.ip}`);
+  next();
+});
 
 // Health check
 app.get('/health', (req, res) => {
@@ -115,7 +157,7 @@ app.get('/api/test-browserbase', async (req, res) => {
 });
 
 // STREAMING advisory endpoint (with real-time progress updates)
-app.post('/api/advise-stream', rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
+app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   // Set headers for Server-Sent Events
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -165,7 +207,7 @@ app.post('/api/advise-stream', rateLimitMiddleware, queryValidationMiddleware, a
 });
 
 // Main advisory endpoint (Claude + Scraper)
-app.post('/api/advise', rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
+app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   try {
     console.log('=====================================');
     console.log('[ADVISE] NEW REQUEST');
