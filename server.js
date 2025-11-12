@@ -1,7 +1,7 @@
 // server.js
 import express from 'express';
 import cors from 'cors';
-import { scrapeProperty } from './services/browserbase.js';
+import { scrapeProperty } from './services/goldcoast-api.js';
 import { getAdvisory } from './services/claude.js';
 import { 
   rateLimitMiddleware, 
@@ -108,7 +108,7 @@ app.get('/api/scrape-debug/:query', async (req, res) => {
     console.log(`[SCRAPE-DEBUG] Query: ${query}`);
     
     // Import the test version that returns raw text
-    const { scrapePropertyDebug } = await import('./services/browserbase.js');
+    const { scrapePropertyDebug } = await import('./services/goldcoast-api.js');
     const data = await scrapePropertyDebug(query);
     
     res.json({
