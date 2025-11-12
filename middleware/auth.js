@@ -1,5 +1,6 @@
 // middleware/auth.js
 // Optional API key authentication
+
 /**
  * API Key authentication middleware
  * Enable by setting API_KEYS environment variable
@@ -21,7 +22,7 @@ export function apiKeyAuthMiddleware(req, res, next) {
   const apiKey = req.headers['x-api-key'] || req.query.apiKey;
   
   if (!apiKey) {
-    console.log(`[AUTH] Blocked ${req.ip}: No API key provided`);  // ← FIXED
+    console.log(`[AUTH] Blocked ${req.ip}: No API key provided`);
     return res.status(401).json({
       error: 'Authentication required',
       message: 'Please provide an API key in X-API-Key header or apiKey query parameter'
@@ -30,7 +31,7 @@ export function apiKeyAuthMiddleware(req, res, next) {
   
   // Validate API key
   if (!allowedKeys.includes(apiKey)) {
-    console.log(`[AUTH] Blocked ${req.ip}: Invalid API key`);  // ← FIXED
+    console.log(`[AUTH] Blocked ${req.ip}: Invalid API key`);
     return res.status(401).json({
       error: 'Authentication failed',
       message: 'Invalid API key'
@@ -38,15 +39,6 @@ export function apiKeyAuthMiddleware(req, res, next) {
   }
   
   // Valid key - allow request
-  console.log(`[AUTH] Valid API key from ${req.ip}`);  // ← FIXED
+  console.log(`[AUTH] Valid API key from ${req.ip}`);
   next();
 }
-```
-
----
-
-## 🔧 Set Environment Variable in Railway:
-
-Go to your Railway project and add:
-```
-API_KEYS=dev_sk_devi_x7k9m2p4n8q5w3e6r1t0
