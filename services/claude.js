@@ -107,24 +107,24 @@ User query: ${userQuery}`
 
       // Call the scraper
       if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
-      const propertyData = await scrapeProperty(toolInput.query, sendProgress);
+      const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
 
-// Check if disambiguation is needed
-if (propertyData.needsDisambiguation) {
-  console.log('[CLAUDE] Disambiguation needed, asking user...');
-  
-  const suggestionsList = propertyData.suggestions
-    .map((s, i) => `${i + 1}. ${s.address}`)
-    .join('\n');
-  
-  return {
-    answer: `I found multiple properties matching "${propertyData.originalQuery}". Please specify which one:\n\n${suggestionsList}\n\nWhich property would you like information about?`,
-    usedTool: 'get_property_info',
-    propertyData: null
-  };
-}
+      // Check if disambiguation is needed
+      if (propertyData.needsDisambiguation) {
+        console.log('[CLAUDE] Disambiguation needed, asking user...');
+        
+        const suggestionsList = propertyData.suggestions
+          .map((s, i) => `${i + 1}. ${s.address}`)
+          .join('\n');
+        
+        return {
+          answer: `I found multiple properties matching "${propertyData.originalQuery}". Please specify which one:\n\n${suggestionsList}\n\nWhich property would you like information about?`,
+          usedTool: 'get_property_info',
+          propertyData: null
+        };
+      }
 
-console.log('[CLAUDE] Property data retrieved');
+      console.log('[CLAUDE] Property data retrieved');
 
       // Search for relevant planning scheme information
       if (sendProgress) sendProgress('🧠 Searching planning regulations database...');
