@@ -174,12 +174,11 @@ async function geocodeAddress(address) {
       console.log(`[API] Nominatim: ${lat}, ${lon}`);
       return { lat, lon, confidence: 85 };
     }
-  } catch (error) {
+ } catch (error) {
     console.log(`[API] Nominatim also failed`);
   }
   
   throw new Error('Address not found by any geocoder');
-} }
 }
 
 /**
