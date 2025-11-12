@@ -1,6 +1,6 @@
 // services/claude.js
 import Anthropic from '@anthropic-ai/sdk';
-import { scrapeProperty } from './browserbase.js';
+import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
 
 const anthropic = new Anthropic({
