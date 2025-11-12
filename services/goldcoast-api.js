@@ -49,49 +49,137 @@ async function getCadastreByLotPlan(lotplan) {
 }
 
 /**
- * Geocode address using Queensland Government ArcGIS Geocoder
- * More accurate for QLD addresses than Nominatim
+ * Geocode address with smart disambiguation
+ * If address is incomplete, returns multiple suggestions
  */
 async function geocodeAddress(address) {
   console.log(`[API] Geocoding: ${address}`);
   
-  const url = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Location/QldLocator/GeocodeServer/findAddressCandidates';
+  // Check if address looks complete (has suburb)
+  const goldCoastSuburbs = [
+    'mermaid waters', 'burleigh heads', 'palm beach', 'surfers paradise',
+    'broadbeach', 'southport', 'main beach', 'robina', 'varsity lakes',
+    'clear island waters', 'benowa', 'bundall', 'ashmore', 'molendinar',
+    'nerang', 'mudgeeraba', 'currumbin', 'coolangatta', 'miami', 'nobby beach'
+  ];
   
-  const params = new URLSearchParams({
-    f: 'json',
-    SingleLine: address,
-    outFields: '*',
-    maxLocations: 1
-  });
+  const hasSuburb = goldCoastSuburbs.some(suburb => 
+    address.toLowerCase().includes(suburb)
+  );
   
+  const hasPostcode = /\b4\d{3}\b/.test(address);
+  
+  // If incomplete address, search for suggestions
+  if (!hasSuburb && !hasPostcode) {
+    console.log(`[API] Address incomplete, searching for matches...`);
+    
+    try {
+      const url = `https://nominatim.openstreetmap.org/search`;
+      const params = new URLSearchParams({
+        q: address + ', Gold Coast, Queensland, Australia',
+        format: 'json',
+        limit: 5,
+        countrycodes: 'au',
+        addressdetails: 1
+      });
+      
+      const response = await fetch(`${url}?${params}`, {
+        headers: { 'User-Agent': 'GoldCoastPropertyAdvisor/2.0' }
+      });
+      const data = await response.json();
+      
+      const goldCoastResults = data.filter(r => 
+        r.display_name.toLowerCase().includes('gold coast')
+      );
+      
+      if (goldCoastResults.length > 1) {
+        const suggestions = goldCoastResults.slice(0, 3).map(r => ({
+          address: r.display_name,
+          lat: parseFloat(r.lat),
+          lon: parseFloat(r.lon)
+        }));
+        
+        console.log(`[API] Found ${suggestions.length} possible matches`);
+        
+        const error = new Error('DISAMBIGUATION_NEEDED');
+        error.suggestions = suggestions;
+        throw error;
+      }
+      
+      if (goldCoastResults.length === 1) {
+        console.log(`[API] Single match found, using it`);
+        const result = goldCoastResults[0];
+        return {
+          lat: parseFloat(result.lat),
+          lon: parseFloat(result.lon),
+          confidence: 80
+        };
+      }
+    } catch (error) {
+      if (error.message === 'DISAMBIGUATION_NEEDED') {
+        throw error;
+      }
+      console.log(`[API] Nominatim search failed:`, error.message);
+    }
+  }
+  
+  // TRY 1: Queensland Government Geocoder
   try {
+    const url = 'https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Location/QldLocator/GeocodeServer/findAddressCandidates';
+    
+    const params = new URLSearchParams({
+      f: 'json',
+      SingleLine: address,
+      outFields: '*',
+      maxLocations: 1
+    });
+    
     const response = await fetch(`${url}?${params}`);
     const data = await response.json();
     
     if (data.candidates?.[0]) {
       const candidate = data.candidates[0];
-      // QLD geocoder returns Web Mercator (3857), need to convert to WGS84 (4326)
       const xMercator = candidate.location.x;
       const yMercator = candidate.location.y;
       const score = candidate.score;
       
-      // Convert from Web Mercator to lat/lon
       const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [xMercator, yMercator]);
       
-      console.log(`[API] ✓ Geocoded: ${lat}, ${lon} (confidence: ${score}%)`);
-      
-      if (score < 80) {
-        console.log(`[API] ⚠️ Low confidence score: ${score}%, results may be inaccurate`);
-      }
-      
+      console.log(`[API] QLD Geocoder: ${lat}, ${lon} (confidence: ${score}%)`);
       return { lat, lon, confidence: score };
     }
-    
-    throw new Error('Address not found by geocoder');
   } catch (error) {
-    console.error(`[API] Geocoding failed:`, error.message);
-    throw new Error(`Failed to geocode address: ${error.message}`);
+    console.log(`[API] QLD geocoder failed, trying Nominatim...`);
   }
+  
+  // TRY 2: Nominatim fallback
+  try {
+    const url = `https://nominatim.openstreetmap.org/search`;
+    const params = new URLSearchParams({
+      q: address,
+      format: 'json',
+      limit: 1,
+      countrycodes: 'au'
+    });
+    
+    const response = await fetch(`${url}?${params}`, {
+      headers: { 'User-Agent': 'GoldCoastPropertyAdvisor/2.0' }
+    });
+    const data = await response.json();
+    
+    if (data[0]) {
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      
+      console.log(`[API] Nominatim: ${lat}, ${lon}`);
+      return { lat, lon, confidence: 85 };
+    }
+  } catch (error) {
+    console.log(`[API] Nominatim also failed`);
+  }
+  
+  throw new Error('Address not found by any geocoder');
+} }
 }
 
 /**
@@ -394,6 +482,16 @@ export async function scrapeProperty(query, sendProgress = null) {
     };
     
   } catch (error) {
+    // Handle disambiguation requests
+    if (error.message === 'DISAMBIGUATION_NEEDED') {
+      console.log(`[API] Disambiguation needed, returning suggestions`);
+      return {
+        needsDisambiguation: true,
+        suggestions: error.suggestions,
+        originalQuery: query
+      };
+    }
+    
     console.error('[API ERROR]', error.message);
     throw new Error(`Property lookup failed: ${error.message}`);
   }
