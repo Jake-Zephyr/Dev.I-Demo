@@ -420,7 +420,130 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
     });
   }
 });
-
+// ===== PROJECT VISUALISER ENDPOINT =====
+app.post('/api/generate-visualization', 
+  apiKeyAuthMiddleware, 
+  rateLimitMiddleware, 
+  async (req, res) => {
+    try {
+      const { 
+        developmentType,
+        architecturalStyle,
+        stories,
+        materials,
+        viewPerspective,
+        timeOfDay,
+        landscaping,
+        propertyContext 
+      } = req.body;
+      
+      console.log('[VISUALISER] Request received:', {
+        developmentType,
+        architecturalStyle,
+        stories
+      });
+      
+      // Build the prompt
+      const materialsText = materials.join(', ');
+      
+      const perspectiveMap = {
+        'Street Level': 'street-level perspective, human eye level',
+        'Aerial': '45-degree aerial view, showing roofline and context',
+        '3/4 View': 'three-quarter view showcasing building depth and form'
+      };
+      
+      const lightingMap = {
+        'Day': 'bright natural daylight, clear blue sky',
+        'Dusk': 'golden hour lighting, warm ambient glow',
+        'Night': 'elegant night lighting, architectural illumination'
+      };
+      
+      const landscapingMap = {
+        'Minimal': 'clean minimalist landscaping',
+        'Lush': 'established gardens and mature trees',
+        'Tropical': 'lush tropical landscaping with palms'
+      };
+      
+      const prompt = `Professional architectural rendering, ${developmentType}, ${architecturalStyle} style, ${stories}-storey building, featuring ${materialsText} facade, ${perspectiveMap[viewPerspective]}, ${lightingMap[timeOfDay]}, ${landscapingMap[landscaping]}, Gold Coast Queensland Australia, photorealistic render, high detail, architectural visualization, professional photography quality, 8K resolution`;
+      
+      console.log('[VISUALISER] Generated prompt:', prompt);
+      
+      // Call Replicate API
+      console.log('[VISUALISER] Calling Replicate API...');
+      const response = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${process.env.REPLICATE_API_TOKEN}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'wait'
+        },
+        body: JSON.stringify({
+          version: 'black-forest-labs/flux-schnell',
+          input: {
+            prompt: prompt,
+            num_outputs: 1,
+            aspect_ratio: "16:9",
+            output_format: "jpg",
+            output_quality: 90
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        console.error('[VISUALISER] Replicate error:', error);
+        throw new Error(`Replicate API error: ${response.status}`);
+      }
+      
+      const prediction = await response.json();
+      console.log('[VISUALISER] Prediction created:', prediction.id);
+      
+      // Poll for completion
+      let result = prediction;
+      let attempts = 0;
+      const maxAttempts = 60; // 60 seconds max
+      
+      while (
+        (result.status === 'starting' || result.status === 'processing') && 
+        attempts < maxAttempts
+      ) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const statusResponse = await fetch(
+          `https://api.replicate.com/v1/predictions/${result.id}`,
+          {
+            headers: {
+              'Authorization': `Token ${process.env.REPLICATE_API_TOKEN}`
+            }
+          }
+        );
+        
+        result = await statusResponse.json();
+        attempts++;
+        console.log(`[VISUALISER] Status: ${result.status} (attempt ${attempts})`);
+      }
+      
+      if (result.status === 'succeeded') {
+        console.log('[VISUALISER] ✅ Image generated successfully');
+        res.json({
+          success: true,
+          imageUrl: result.output[0],
+          prompt: prompt,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.error('[VISUALISER] ❌ Generation failed:', result.status);
+        throw new Error(`Image generation failed: ${result.status}`);
+      }
+      
+    } catch (error) {
+      console.error('[VISUALISER ERROR]', error);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+});
 // Start server
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
