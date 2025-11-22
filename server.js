@@ -420,7 +420,7 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
     });
   }
 });
-// ===== PROJECT VISUALISER ENDPOINT =====
+// ===== PROJECT VISUALISER ENDPOINT (FIXED) =====
 app.post('/api/generate-visualization', 
   apiKeyAuthMiddleware, 
   rateLimitMiddleware, 
@@ -434,57 +434,86 @@ app.post('/api/generate-visualization',
         viewPerspective,
         timeOfDay,
         landscaping,
-        propertyContext 
+        projectDescription  // ← This is the user's actual description
       } = req.body;
       
       console.log('[VISUALISER] Request received:', {
         developmentType,
         architecturalStyle,
-        stories
+        stories,
+        hasCustomDescription: !!projectDescription
       });
       
-      // Build the prompt
-      const materialsText = materials.join(', ');
+      // Build prompt - USER DESCRIPTION FIRST
+      let prompt = '';
       
-      const perspectiveMap = {
-        'Street Level': 'street-level perspective, human eye level',
-        'Aerial': '45-degree aerial view, showing roofline and context',
-        '3/4 View': 'three-quarter view showcasing building depth and form'
-      };
+      // Start with user's description if provided
+      if (projectDescription && projectDescription.trim()) {
+        prompt = projectDescription.trim();
+      } else {
+        // Fallback to structured description
+        const materialsText = materials?.join(', ') || 'modern materials';
+        prompt = `${developmentType || 'residential development'}, ${architecturalStyle || 'contemporary'} architecture, ${stories || 2}-storey, ${materialsText} facade`;
+      }
       
-      const lightingMap = {
-        'Day': 'bright natural daylight, clear blue sky',
-        'Dusk': 'golden hour lighting, warm ambient glow',
-        'Night': 'elegant night lighting, architectural illumination'
-      };
+      // Add technical parameters to enhance (not override) the description
+      const enhancements = [];
       
-      const landscapingMap = {
-        'Minimal': 'clean minimalist landscaping',
-        'Lush': 'established gardens and mature trees',
-        'Tropical': 'lush tropical landscaping with palms'
-      };
+      // View perspective
+      if (viewPerspective === 'Street Level') {
+        enhancements.push('street-level perspective');
+      } else if (viewPerspective === 'Aerial') {
+        enhancements.push('aerial view at 45-degree angle');
+      } else if (viewPerspective === '3/4 View') {
+        enhancements.push('three-quarter architectural view');
+      }
       
-      const prompt = `Professional architectural rendering, ${developmentType}, ${architecturalStyle} style, ${stories}-storey building, featuring ${materialsText} facade, ${perspectiveMap[viewPerspective]}, ${lightingMap[timeOfDay]}, ${landscapingMap[landscaping]}, Gold Coast Queensland Australia, photorealistic render, high detail, architectural visualization, professional photography quality, 8K resolution`;
+      // Lighting
+      if (timeOfDay === 'Day') {
+        enhancements.push('bright daylight, blue sky');
+      } else if (timeOfDay === 'Dusk') {
+        enhancements.push('golden hour lighting, warm sunset glow');
+      } else if (timeOfDay === 'Night') {
+        enhancements.push('dramatic night lighting');
+      }
       
-      console.log('[VISUALISER] Generated prompt:', prompt);
+      // Landscaping context
+      if (landscaping === 'Tropical') {
+        enhancements.push('tropical landscaping, palm trees');
+      } else if (landscaping === 'Lush') {
+        enhancements.push('mature landscaping, established gardens');
+      } else if (landscaping === 'Minimal') {
+        enhancements.push('minimalist landscaping');
+      }
       
-      // Call Replicate API
+      // Add location context
+      enhancements.push('Gold Coast, Queensland, Australia');
+      
+      // Quality directives - make it HYPER-REALISTIC
+      const qualityTags = 'photorealistic architectural visualization, professional photography, ultra-detailed, 8K resolution, architectural digest quality, physically accurate materials and lighting';
+      
+      // Combine everything
+      const fullPrompt = `${prompt}, ${enhancements.join(', ')}, ${qualityTags}`;
+      
+      console.log('[VISUALISER] Final prompt:', fullPrompt);
+      
+      // Call Replicate API with Flux Schnell
       console.log('[VISUALISER] Calling Replicate API...');
       const response = await fetch('https://api.replicate.com/v1/predictions', {
         method: 'POST',
         headers: {
           'Authorization': `Token ${process.env.REPLICATE_API_TOKEN}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'wait'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           version: 'black-forest-labs/flux-schnell',
           input: {
-            prompt: prompt,
+            prompt: fullPrompt,
             num_outputs: 1,
             aspect_ratio: "16:9",
-            output_format: "jpg",
-            output_quality: 90
+            output_format: "webp",  // ← Changed to WebP for better quality
+            output_quality: 95,     // ← Cranked up to 95
+            disable_safety_checker: false
           }
         })
       });
@@ -528,7 +557,7 @@ app.post('/api/generate-visualization',
         res.json({
           success: true,
           imageUrl: result.output[0],
-          prompt: prompt,
+          prompt: fullPrompt,  // Return actual prompt used
           timestamp: new Date().toISOString()
         });
       } else {
