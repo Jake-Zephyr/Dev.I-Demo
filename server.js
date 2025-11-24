@@ -10,6 +10,7 @@ import {
   getUsageStats 
 } from './middleware/protection.js';
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
+import { calculateStampDuty } from './services/stamp-duty-calculator.js';
 
 const app = express();
 
@@ -240,7 +241,61 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     });
   }
 });
+// ===== STAMP DUTY CALCULATOR ENDPOINTS =====
+app.post('/api/calculate-stamp-duty', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { propertyValue, state, useType, isFirstHomeBuyer, isNewHome, isVacantLand, isForeign, ownershipStructure, contractDate } = req.body;
 
+    if (!propertyValue || propertyValue <= 0) {
+      return res.status(400).json({ success: false, error: 'Property value must be a positive number' });
+    }
+
+    if (!state) {
+      return res.status(400).json({ success: false, error: 'State is required' });
+    }
+
+    const validStates = ['NSW', 'VIC', 'QLD', 'WA', 'SA', 'TAS', 'ACT', 'NT'];
+    if (!validStates.includes(state)) {
+      return res.status(400).json({ success: false, error: `Invalid state. Must be one of: ${validStates.join(', ')}` });
+    }
+
+    const input = {
+      propertyValue: Number(propertyValue),
+      state,
+      useType: useType || 'owner_occupied',
+      isFirstHomeBuyer: Boolean(isFirstHomeBuyer),
+      isNewHome: Boolean(isNewHome),
+      isVacantLand: Boolean(isVacantLand),
+      isForeign: Boolean(isForeign),
+      ownershipStructure,
+      contractDate: contractDate || new Date().toISOString().split('T')[0],
+    };
+
+    const result = calculateStampDuty(input);
+    console.log('[STAMP DUTY]', input.state, input.propertyValue, '→', result.stampDuty);
+    
+    return res.json(result);
+  } catch (error) {
+    console.error('[STAMP DUTY ERROR]', error);
+    return res.status(500).json({ success: false, error: 'Internal server error', message: error.message });
+  }
+});
+
+app.get('/api/stamp-duty/states', (req, res) => {
+  res.json({
+    success: true,
+    states: [
+      { code: 'NSW', name: 'New South Wales', fhbAvailable: true },
+      { code: 'VIC', name: 'Victoria', fhbAvailable: true },
+      { code: 'QLD', name: 'Queensland', fhbAvailable: true },
+      { code: 'WA', name: 'Western Australia', fhbAvailable: true },
+      { code: 'SA', name: 'South Australia', fhbAvailable: true },
+      { code: 'TAS', name: 'Tasmania', fhbAvailable: true },
+      { code: 'ACT', name: 'Australian Capital Territory', fhbAvailable: true },
+      { code: 'NT', name: 'Northern Territory', fhbAvailable: false },
+    ],
+  });
+});
 // STREAMING advisory endpoint (with real-time progress updates)
 app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   // Set headers for Server-Sent Events
