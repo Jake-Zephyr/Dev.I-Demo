@@ -241,6 +241,7 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     });
   }
 });
+
 // ===== STAMP DUTY CALCULATOR ENDPOINTS =====
 app.post('/api/calculate-stamp-duty', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
   try {
@@ -296,6 +297,7 @@ app.get('/api/stamp-duty/states', (req, res) => {
     ],
   });
 });
+
 // STREAMING advisory endpoint (with real-time progress updates)
 app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   // Set headers for Server-Sent Events
@@ -640,6 +642,8 @@ app.listen(PORT, () => {
   console.log(`   POST /api/advise`);
   console.log(`   POST /api/advise-stream`);
   console.log(`   POST /api/check-overlays  ⭐ NEW`);
+  console.log(`   POST /api/calculate-stamp-duty  💰 NEW`);
+  console.log(`   GET  /api/stamp-duty/states  💰 NEW`);
 });
 
 export default app;
