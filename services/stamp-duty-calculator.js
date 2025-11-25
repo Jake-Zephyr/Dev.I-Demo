@@ -1,5 +1,9 @@
-function calculateStampDuty(input) {
+// services/stamp-duty-calculator.js
+
+export function calculateStampDuty(input) {
   const { propertyValue, state, useType, isFirstHomeBuyer, isNewHome, isVacantLand, isForeign } = input;
+  
+  // ... rest of the code I provided above
   
   let baseDuty = 0;
   let foreignSurcharge = 0;
