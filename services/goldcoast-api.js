@@ -10,6 +10,136 @@ const SERVICES = {
   OVERLAYS: 'https://maps1.goldcoast.qld.gov.au/arcgis/rest/services/V8_Overlays/MapServer'
 };
 
+// WHITELIST: Only query layers verified to return accurate data
+// Based on cross-reference with official Gold Coast City Plan interactive mapping
+const VERIFIED_OVERLAY_LAYERS = [
+  // Acid sulfate soils
+  1,    // Land at or below 5m AHD
+  2,    // Land at or below 20m AHD
+  
+  // Airport environs
+  7,    // 2047 Australian Noise Exposure Forecast (ANEF) contour
+  9,    // Lighting area buffer zones
+  13,   // Obstacle Limitation Surface (OLS) - polyline
+  15,   // Obstacle Limitation Surface (OLS) - polygon
+  17,   // PANS-OPS contour - polyline
+  19,   // PANS-OPS contour - polygon
+  21,   // Public safety area
+  24,   // Wildlife hazard buffer zones - polyline
+  25,   // Wildlife hazard buffer zones - polygon
+  
+  // Building height
+  26,   // Building height
+  
+  // Bushfire
+  28,   // Bushfire hazard area
+  
+  // Coastal erosion hazard
+  31,   // Foreshore seawall line
+  32,   // Foreshore seawall setback
+  33,   // Foreshore seawall site
+  34,   // Waterfront development control area
+  
+  // Dwelling house
+  36,   // Dwelling house overlay area
+  
+  // Environmental significance - biodiversity
+  39,   // Protected areas
+  41,   // Coastal wetlands and islands core habitat system
+  42,   // Hinterland core habitat system
+  43,   // Substantial remnants
+  44,   // Hinterland to coast critical corridors
+  
+  // Environmental significance - priority species
+  47,   // State significant species
+  48,   // Koala habitat areas
+  50,   // Local significant species
+  
+  // Environmental significance - vegetation management
+  53,   // Regulated vegetation
+  55,   // Vegetation protection order
+  56,   // Vegetation management
+  
+  // Environmental significance - wetlands and waterways
+  59,   // State significant wetlands and aquatic systems
+  61,   // Local significant wetlands
+  62,   // Waterways
+  64,   // Canal
+  65,   // Lake
+  66,   // Buffer area
+  
+  // Extractive resources
+  74,   // Special management area
+  75,   // Resource area / processing area
+  76,   // Separation area
+  78,   // 100m transport route separation area
+  
+  // Flood
+  80,   // Flood assessment required
+  
+  // Industry, community infrastructure, agriculture
+  90,   // Community infrastructure
+  91,   // Industry interface area
+  92,   // Community infrastructure interface area
+  93,   // Agriculture land interface area
+  94,   // Agriculture land
+  95,   // Airport noise exposure area
+  
+  // Landslide
+  96,   // Landslide hazard
+  
+  // Light rail
+  100,  // Light rail urban renewal area boundary
+  101,  // Light rail urban renewal area
+  
+  // Minimum lot size
+  102,  // Minimum lot size
+  
+  // Mudgeeraba village
+  103,  // Mudgeeraba village character
+  
+  // Party house
+  107,  // Party house area
+  
+  // Regional infrastructure
+  111,  // Water supply pipeline 20m buffer
+  112,  // Water storage
+  113,  // Water supply properties
+  114,  // Ferry Road high voltage corridor (Energex)
+  115,  // Major electricity infrastructure (Powerlink)
+  116,  // Major electricity infrastructure (Energex)
+  
+  // Residential density
+  117,  // Residential density
+  
+  // Ridges
+  118,  // Ridges and significant hills protection
+  
+  // State controlled roads and transport noise
+  120,  // Railway corridor 100m buffer
+  122,  // Transport noise corridor - State-controlled road
+  123,  // Transport noise corridor - railway
+  124,  // Property adjacent to State controlled road
+  
+  // The Spit
+  126,  // Overlay area
+  127,  // Focus areas
+  
+  // Water catchments
+  129,  // Dual reticulation
+  130,  // Water supply buffer area
+  131,  // Woongoolba flood mitigation catchment area
+];
+
+// EXCLUDED layers that return inaccurate/irrelevant data:
+// 14 - Outer horizontal surface 15km (covers entire city, not property-specific)
+// 18 - Horizontal plane labels (annotation layer, not useful)
+// 83 - Local heritage place (returns false positives)
+// 84 - Heritage place polygon (returns false positives)
+// 85 - Heritage protection boundary (returns false positives)
+// 86 - Heritage adjoining lot (returns false positives)
+// 121 - State controlled road (line geometry, not property-specific)
+
 /**
  * Detect if query is a lot/plan or address
  */
@@ -23,7 +153,7 @@ function detectQueryType(query) {
 }
 
 /**
- * Get cadastre by lot/plan number directly
+ * Get cadastre by lot/plan number directly - returns geometry
  */
 async function getCadastreByLotPlan(lotplan) {
   console.log(`[API] Querying cadastre by lot/plan: ${lotplan}`);
@@ -33,7 +163,7 @@ async function getCadastreByLotPlan(lotplan) {
     f: 'json',
     where: `upper(LOTPLAN) = upper('${lotplan}')`,
     outFields: '*',
-    outSR: '3857',
+    outSR: '28356',  // Return in MGA56 for direct use
     returnGeometry: 'true'
   });
   
@@ -60,7 +190,13 @@ async function geocodeAddress(address) {
     'mermaid waters', 'burleigh heads', 'palm beach', 'surfers paradise',
     'broadbeach', 'southport', 'main beach', 'robina', 'varsity lakes',
     'clear island waters', 'benowa', 'bundall', 'ashmore', 'molendinar',
-    'nerang', 'mudgeeraba', 'currumbin', 'coolangatta', 'miami', 'nobby beach'
+    'nerang', 'mudgeeraba', 'currumbin', 'coolangatta', 'miami', 'nobby beach',
+    'runaway bay', 'paradise point', 'biggera waters', 'labrador', 'arundel',
+    'pacific pines', 'gaven', 'highland park', 'carrara', 'merrimac',
+    'worongary', 'tallai', 'bonogin', 'reedy creek', 'elanora', 'tugun',
+    'bilinga', 'kirra', 'tweed heads', 'banora point', 'terranora',
+    'hope island', 'sanctuary cove', 'oxenford', 'coomera', 'upper coomera',
+    'helensvale', 'maudsland', 'jacobs well', 'ormeau', 'pimpama'
   ];
   
   const hasSuburb = goldCoastSuburbs.some(suburb => 
@@ -174,7 +310,7 @@ async function geocodeAddress(address) {
       console.log(`[API] Nominatim: ${lat}, ${lon}`);
       return { lat, lon, confidence: 85 };
     }
- } catch (error) {
+  } catch (error) {
     console.log(`[API] Nominatim also failed`);
   }
   
@@ -182,56 +318,44 @@ async function geocodeAddress(address) {
 }
 
 /**
- * Create polygon geometry for ArcGIS queries
- */
-function createPolygon(x, y, buffer = 50) {
-  return {
-    rings: [[[x-buffer, y-buffer], [x+buffer, y-buffer], [x+buffer, y+buffer], [x-buffer, y+buffer], [x-buffer, y-buffer]]],
-    spatialReference: { wkid: 28356 }
-  };
-}
-
-/**
- * Get cadastre data (Lot/Plan and Area)
+ * Get cadastre data by coordinates - returns geometry for overlay queries
  * Handles unit number lookup if provided
  */
-async function getCadastre(lat, lon, unitNumber) {
-  console.log(`[API] Querying cadastre...`);
+async function getCadastreWithGeometry(lat, lon, unitNumber) {
+  console.log(`[API] Querying cadastre with geometry...`);
   
   // Convert to Web Mercator (EPSG:3857) for cadastre service
   const [x3857, y3857] = proj4('EPSG:4326', 'EPSG:3857', [lon, lat]);
   const url = `${SERVICES.CADASTRE}/query`;
   
-  // STEP 1: Query by coordinates to get parent lot
   // Try with small buffer first, then larger if needed
-  const buffers = [5, 20, 50]; // Try progressively larger search areas
-  let parentLot = null;
+  const buffers = [5, 20, 50];
+  let feature = null;
   
   for (const buffer of buffers) {
-    const geometry = { x: Math.round(x3857), y: Math.round(y3857) };
     const params = new URLSearchParams({
       f: 'json',
       geometry: JSON.stringify({
-        x: geometry.x,
-        y: geometry.y,
+        x: Math.round(x3857),
+        y: Math.round(y3857),
         spatialReference: { wkid: 3857 }
       }),
       geometryType: 'esriGeometryPoint',
       distance: buffer,
       units: 'esriSRUnit_Meter',
       inSR: '3857',
-      outSR: '3857',
+      outSR: '28356',  // Return in MGA56 for direct use
       spatialRel: 'esriSpatialRelIntersects',
       outFields: '*',
-      returnGeometry: 'false'
+      returnGeometry: 'true'  // GET THE GEOMETRY
     });
     
     const resp = await fetch(`${url}?${params}`);
     const data = await resp.json();
     
     if (data.features?.[0]) {
-      parentLot = data.features[0].attributes;
-      console.log(`[API] ✓ Found parent lot: ${parentLot.LOTPLAN} (buffer: ${buffer}m)`);
+      feature = data.features[0];
+      console.log(`[API] ✓ Found lot: ${feature.attributes.LOTPLAN} (buffer: ${buffer}m)`);
       break;
     }
     
@@ -240,53 +364,72 @@ async function getCadastre(lat, lon, unitNumber) {
     }
   }
   
-  if (!parentLot) {
+  if (!feature) {
     throw new Error('Property not found in cadastre');
   }
   
-  // STEP 2: If unit number provided, query specific unit
-  if (unitNumber && parentLot.NUMBEROFUNITS > 1) {
-    const specificLotPlan = parentLot.LOTPLAN.replace(/^\d+/, unitNumber);
+  // Handle unit lookup if needed
+  if (unitNumber && feature.attributes.NUMBEROFUNITS > 1) {
+    const specificLotPlan = feature.attributes.LOTPLAN.replace(/^\d+/, unitNumber);
     console.log(`[API] Querying unit: ${specificLotPlan}...`);
     
     const params2 = new URLSearchParams({
       f: 'json',
       where: `upper(LOTPLAN) = upper('${specificLotPlan}')`,
       outFields: '*',
-      outSR: '3857',
-      returnGeometry: 'false'
+      outSR: '28356',
+      returnGeometry: 'true'
     });
     
     const resp2 = await fetch(`${url}?${params2}`);
     const data2 = await resp2.json();
     
     if (data2.features?.[0]) {
-      const unitLot = data2.features[0].attributes;
-      console.log(`[API] ✓ Found unit ${unitNumber}: ${unitLot.AREA_SIZE_SQ_M}sqm`);
-      return unitLot;
+      feature = data2.features[0];
+      console.log(`[API] ✓ Found unit ${unitNumber}: ${feature.attributes.AREA_SIZE_SQ_M}sqm`);
+    } else {
+      console.log(`[API] Unit ${unitNumber} not found, using parent lot`);
     }
-    
-    console.log(`[API] Unit ${unitNumber} not found, using parent lot`);
   }
   
-  return parentLot;
+  return feature;
 }
 
 /**
- * Get zone information
+ * Calculate bounding box from polygon rings
  */
-async function getZone(coords) {
+function getBoundingBox(rings) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  
+  for (const ring of rings) {
+    for (const [x, y] of ring) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Get zone information using lot geometry
+ */
+async function getZone(lotGeometry) {
   console.log(`[API] Querying zone...`);
+  
+  const bbox = getBoundingBox(lotGeometry.rings);
   
   const url = `${SERVICES.ZONE}/identify`;
   const params = new URLSearchParams({
     f: 'json',
-    geometry: JSON.stringify(createPolygon(coords.x, coords.y)),
+    geometry: JSON.stringify(lotGeometry),
     geometryType: 'esriGeometryPolygon',
     sr: '28356',
-    mapExtent: `${coords.x-50},${coords.y-50},${coords.x+50},${coords.y+50}`,
+    mapExtent: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
     imageDisplay: '400,400,96',
-    tolerance: '50',
+    tolerance: '0',  // Use exact geometry, no tolerance
     layers: 'all:0',
     returnGeometry: 'false'
   });
@@ -304,20 +447,22 @@ async function getZone(coords) {
 }
 
 /**
- * Get building height information
+ * Get building height information using lot geometry
  */
-async function getHeight(coords) {
+async function getHeight(lotGeometry) {
   console.log(`[API] Querying height...`);
+  
+  const bbox = getBoundingBox(lotGeometry.rings);
   
   const url = `${SERVICES.HEIGHT}/identify`;
   const params = new URLSearchParams({
     f: 'json',
-    geometry: JSON.stringify(createPolygon(coords.x, coords.y)),
+    geometry: JSON.stringify(lotGeometry),
     geometryType: 'esriGeometryPolygon',
     sr: '28356',
-    mapExtent: `${coords.x-50},${coords.y-50},${coords.x+50},${coords.y+50}`,
+    mapExtent: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
     imageDisplay: '400,400,96',
-    tolerance: '50',
+    tolerance: '0',
     layers: 'all:0',
     returnGeometry: 'false'
   });
@@ -336,24 +481,24 @@ async function getHeight(coords) {
 }
 
 /**
- * Get overlays (including density)
+ * Get overlays using ACTUAL LOT GEOMETRY (not buffered centroid)
+ * This ensures we only get overlays that genuinely intersect the property
  */
-async function getOverlays(coords) {
-  console.log(`[API] Querying overlays...`);
+async function getOverlays(lotGeometry) {
+  console.log(`[API] Querying overlays using actual lot geometry (${VERIFIED_OVERLAY_LAYERS.length} layers)...`);
   
-  // Query ALL overlay layers (0-131) - City Plan website checks every single one
-  // Only layers with actual data will be returned
-  const layerNumbers = Array.from({length: 132}, (_, i) => i); // [0,1,2,...,131]
-  const layers = layerNumbers.join(',');
+  const bbox = getBoundingBox(lotGeometry.rings);
+  const layers = VERIFIED_OVERLAY_LAYERS.join(',');
+  
   const url = `${SERVICES.OVERLAYS}/identify`;
   const params = new URLSearchParams({
     f: 'json',
-    geometry: JSON.stringify(createPolygon(coords.x, coords.y)),
+    geometry: JSON.stringify(lotGeometry),
     geometryType: 'esriGeometryPolygon',
     sr: '28356',
-    mapExtent: `${coords.x-50},${coords.y-50},${coords.x+50},${coords.y+50}`,
+    mapExtent: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
     imageDisplay: '400,400,96',
-    tolerance: '50',
+    tolerance: '0',  // ZERO tolerance - exact intersection only
     layers: `visible:${layers}`,
     returnGeometry: 'false'
   });
@@ -363,7 +508,6 @@ async function getOverlays(coords) {
   
   if (data.results?.length > 0) {
     console.log(`[API] ✓ Found ${data.results.length} overlays`);
-    // Debug: Show which layer IDs returned data
     const layerIds = data.results.map(r => r.layerId).join(', ');
     console.log(`[API] Layer IDs with data: ${layerIds}`);
     return data.results;
@@ -374,10 +518,10 @@ async function getOverlays(coords) {
 }
 
 /**
- * Main scraper function - matches browserbase.js API
- * @param {string} query - Address to search
+ * Main scraper function - uses actual lot geometry for accurate overlay detection
+ * @param {string} query - Address or lot/plan to search
  * @param {function} sendProgress - Optional progress callback
- * @returns {Promise<object>} Property data in browserbase format
+ * @returns {Promise<object>} Property data
  */
 export async function scrapeProperty(query, sendProgress = null) {
   const startTime = Date.now();
@@ -388,31 +532,12 @@ export async function scrapeProperty(query, sendProgress = null) {
     const { type, value } = detectQueryType(query);
     console.log(`[API] Detected query type: ${type}`);
     
-    let cadastre, coords;
+    let feature;  // Will contain both attributes AND geometry
     
     if (type === 'lotplan') {
-      // Direct lot/plan lookup
+      // Direct lot/plan lookup - returns geometry in MGA56
       if (sendProgress) sendProgress('📋 Looking up lot/plan...');
-      const feature = await getCadastreByLotPlan(value);
-      cadastre = feature.attributes;
-      
-      // Get centroid coordinates from geometry for zone/overlay queries
-      const geom = feature.geometry;
-      if (geom && geom.rings) {
-        // Calculate centroid of polygon
-        const ring = geom.rings[0];
-        const xSum = ring.reduce((sum, pt) => sum + pt[0], 0);
-        const ySum = ring.reduce((sum, pt) => sum + pt[1], 0);
-        const xCentroid = xSum / ring.length;
-        const yCentroid = ySum / ring.length;
-        
-        // Convert from Web Mercator to MGA56
-        const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [xCentroid, yCentroid]);
-        const [x, y] = proj4('EPSG:4326', 'EPSG:28356', [lon, lat]);
-        coords = { x: Math.round(x), y: Math.round(y) };
-      } else {
-        throw new Error('No geometry returned for lot/plan');
-      }
+      feature = await getCadastreByLotPlan(value);
       
     } else {
       // Address lookup with unit parsing
@@ -429,28 +554,37 @@ export async function scrapeProperty(query, sendProgress = null) {
       if (sendProgress) sendProgress('🌍 Locating property...');
       const { lat, lon } = await geocodeAddress(cleanAddress);
       
-      // Convert to MGA56 for spatial queries
-      const [x, y] = proj4('EPSG:4326', 'EPSG:28356', [lon, lat]);
-      coords = { x: Math.round(x), y: Math.round(y) };
-      
-      // Get cadastre data (handles unit lookup)
+      // Get cadastre with geometry
       if (sendProgress) sendProgress('📋 Retrieving lot information...');
-      cadastre = await getCadastre(lat, lon, unitNumber);
+      feature = await getCadastreWithGeometry(lat, lon, unitNumber);
     }
     
-    // Get zone, height, overlays IN PARALLEL for speed
+    // Verify we have geometry
+    if (!feature.geometry || !feature.geometry.rings) {
+      throw new Error('No geometry returned for property');
+    }
+    
+    const cadastre = feature.attributes;
+    const lotGeometry = {
+      rings: feature.geometry.rings,
+      spatialReference: { wkid: 28356 }
+    };
+    
+    console.log(`[API] Using lot geometry with ${lotGeometry.rings[0].length} vertices`);
+    
+    // Get zone, height, overlays IN PARALLEL using actual lot geometry
     if (sendProgress) sendProgress('🏗️ Analyzing zoning and overlays...');
     const [zone, height, overlays] = await Promise.all([
-      getZone(coords),
-      getHeight(coords),
-      getOverlays(coords)
+      getZone(lotGeometry),
+      getHeight(lotGeometry),
+      getOverlays(lotGeometry)
     ]);
     
     // Extract density from overlays (layer 117)
     const densityOverlay = overlays.find(o => o.layerId === 117);
     const density = densityOverlay?.attributes?.Residential_Density || null;
     
-    // Extract overlay names and DEDUPLICATE (multiple layers can have same name)
+    // Extract overlay names and DEDUPLICATE
     const overlayNames = [...new Set(overlays.map(o => o.layerName))];
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -458,8 +592,8 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     if (sendProgress) sendProgress(`✅ Property data retrieved in ${elapsed}s`);
     
-    // Return in browserbase.js format
     return {
+      success: true,
       property: {
         lotplan: cadastre.LOTPLAN,
         address: cadastre.LONG_ADDRESS || cadastre.HOUSE_ADDRESS || query,
@@ -476,7 +610,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.0',
+      apiVersion: '2.1-geometry',
       timeTaken: elapsed
     };
     
@@ -497,8 +631,7 @@ export async function scrapeProperty(query, sendProgress = null) {
 }
 
 /**
- * Handle overlay-only requests (for follow-up queries)
- * This is faster as it skips cadastre and zone lookups
+ * Handle overlay-only requests using actual lot geometry
  */
 export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
   console.log(`[API] Overlays-only lookup for: ${address}`);
@@ -507,15 +640,25 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
     if (sendProgress) sendProgress('🌍 Locating property...');
     const { lat, lon } = await geocodeAddress(address);
     
-    const [x, y] = proj4('EPSG:4326', 'EPSG:28356', [lon, lat]);
-    const coords = { x: Math.round(x), y: Math.round(y) };
+    if (sendProgress) sendProgress('📋 Retrieving lot geometry...');
+    const feature = await getCadastreWithGeometry(lat, lon, null);
+    
+    if (!feature.geometry || !feature.geometry.rings) {
+      throw new Error('No geometry returned for property');
+    }
+    
+    const lotGeometry = {
+      rings: feature.geometry.rings,
+      spatialReference: { wkid: 28356 }
+    };
     
     if (sendProgress) sendProgress('🗺️ Retrieving overlays...');
-    const overlays = await getOverlays(coords);
+    const overlays = await getOverlays(lotGeometry);
     
-    const overlayNames = overlays.map(o => o.layerName);
+    const overlayNames = [...new Set(overlays.map(o => o.layerName))];
     
     return {
+      success: true,
       property: {
         overlays: overlayNames
       }
