@@ -11,7 +11,15 @@ import {
 } from './middleware/protection.js';
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
 import { calculateStampDuty } from './services/stamp-duty-calculator.js';
-import { getNearbyDAs } from './services/nearbyDAsService.js';
+
+// Nearby DAs service (optional)
+let getNearbyDAs = async () => ({ success: false, error: 'Service not available' });
+try {
+  const module = await import('./services/nearbyDAsService.js');
+  getNearbyDAs = module.getNearbyDAs;
+} catch (e) {
+  console.log('[WARNING] nearbyDAsService not available');
+}
 
 const app = express();
 
