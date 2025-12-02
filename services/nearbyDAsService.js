@@ -5,7 +5,6 @@ const PLANNING_ALERTS_API_KEY = process.env.PLANNING_ALERTS_API_KEY;
 
 export async function getNearbyDAs(address, radius, dateFrom, dateTo) {
   try {
-    // Geocode address
     const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json`;
     const geocodeResponse = await axios.get(geocodeUrl, {
       params: {
@@ -21,7 +20,6 @@ export async function getNearbyDAs(address, radius, dateFrom, dateTo) {
 
     const location = geocodeResponse.data.results[0].geometry.location;
 
-    // Query PlanningAlerts API
     const planningResponse = await axios.get('https://api.planningalerts.org.au/applications.json', {
       params: {
         key: PLANNING_ALERTS_API_KEY,
@@ -46,20 +44,17 @@ export async function getNearbyDAs(address, radius, dateFrom, dateTo) {
       distance: calculateDistance(location.lat, location.lng, app.lat, app.lng)
     }));
 
-    // Filter by date range if provided
     if (dateFrom || dateTo) {
       applications = applications.filter(app => {
         const appDate = new Date(app.date_received);
         const fromDate = dateFrom ? new Date(dateFrom) : null;
         const toDate = dateTo ? new Date(dateTo) : null;
-
         if (fromDate && appDate < fromDate) return false;
         if (toDate && appDate > toDate) return false;
         return true;
       });
     }
 
-    // Sort by distance (closest first)
     applications.sort((a, b) => a.distance - b.distance);
 
     return {
@@ -74,12 +69,13 @@ export async function getNearbyDAs(address, radius, dateFrom, dateTo) {
     };
 
   } catch (error) {
+    console.error('[NEARBY-DAS SERVICE ERROR]', error.message);
     throw error;
   }
 }
 
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371e3; // Earth radius in metres
+  const R = 6371e3;
   const φ1 = lat1 * Math.PI / 180;
   const φ2 = lat2 * Math.PI / 180;
   const Δφ = (lat2 - lat1) * Math.PI / 180;
@@ -90,5 +86,5 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
             Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
-  return R * c; // Distance in metres
+  return R * c;
 }
