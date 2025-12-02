@@ -671,3 +671,5 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
 }
 
 export default { scrapeProperty, scrapePropertyOverlaysOnly };
+
+export default { scrapeProperty, scrapePropertyOverlaysOnly, geocodeAddress };
