@@ -2,7 +2,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
-import { geocodeAddress } from './goldcoast-api.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -96,14 +95,13 @@ TOOL SELECTION RULES:
 - User asks about DAs/development applications → search_development_applications
 - User asks about zoning/planning/what can be built → get_property_info
 - User provides address after you asked for one → use the tool they were asking about
-- For search_development_applications: You can accept partial addresses like "22 Mary Avenue" - the geocoder will find the full address
 
 RESPONSE GUIDELINES:
 1. For greetings: Respond briefly and warmly in 1-2 sentences.
 
 2. For property planning questions: Use get_property_info tool.
 
-3. For DA questions: Use search_development_applications tool. Accept partial addresses - the system will geocode them.
+3. For DA questions: Use search_development_applications tool.
 
 4. When you need information: Ask clearly, then ACT when they respond. Don't acknowledge you're using context.
 
@@ -172,13 +170,15 @@ User query: ${userQuery}`
           planningSchemeContext: planningContext
         };
       }
-        
-        console.log('[CLAUDE] Geocoded to:', geocoded.formatted_address);
+      
+      // Handle DA search tool
+      else if (toolUse.name === 'search_development_applications') {
         if (sendProgress) sendProgress('🔍 Searching development applications...');
+        console.log('[CLAUDE] Searching DAs for:', toolUse.input.address);
         
         const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
         const daResult = await scrapeGoldCoastDAs(
-          geocoded.formatted_address, 
+          toolUse.input.address, 
           toolUse.input.months_back || 12
         );
         
