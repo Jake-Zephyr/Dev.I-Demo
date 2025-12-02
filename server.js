@@ -12,16 +12,16 @@ import {
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
 import { calculateStampDuty } from './services/stamp-duty-calculator.js';
 import { getNearbyDAs } from './services/nearbyDAsService.js';
+
 const app = express();
 
 // Middleware
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',') 
-  : ['*']; // Default: allow all (set ALLOWED_ORIGINS in Railway!)
+  : ['*'];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
@@ -35,14 +35,10 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '2mb' }));
-
-// Emergency shutdown check (first line of defense)
 app.use(emergencyShutdownMiddleware);
-
-// Trust proxy (for correct IP detection behind Railway)
 app.set('trust proxy', true);
 
-// IP Blocklist middleware
+// IP Blocklist
 const blockedIPs = new Set(
   (process.env.BLOCKED_IPS || '').split(',').filter(ip => ip.trim())
 );
@@ -58,7 +54,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Request logging middleware
+// Request logging
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${req.method} ${req.path} - IP: ${req.ip}`);
@@ -70,7 +66,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Usage stats endpoint (for monitoring your costs)
+// Usage stats
 app.get('/api/usage-stats', (req, res) => {
   const stats = getUsageStats();
   res.json({
@@ -80,7 +76,7 @@ app.get('/api/usage-stats', (req, res) => {
   });
 });
 
-// Direct scraper endpoint (for testing)
+// Direct scraper endpoint
 app.get('/api/scrape/:query', async (req, res) => {
   try {
     const { query } = req.params;
@@ -102,13 +98,12 @@ app.get('/api/scrape/:query', async (req, res) => {
   }
 });
 
-// Debug endpoint - returns raw scraped text
+// Debug endpoint
 app.get('/api/scrape-debug/:query', async (req, res) => {
   try {
     const { query } = req.params;
     console.log(`[SCRAPE-DEBUG] Query: ${query}`);
     
-    // Import the test version that returns raw text
     const { scrapePropertyDebug } = await import('./services/goldcoast-api.js');
     const data = await scrapePropertyDebug(query);
     
@@ -125,7 +120,7 @@ app.get('/api/scrape-debug/:query', async (req, res) => {
   }
 });
 
-// Test BrowserBase connection (debugging endpoint)
+// Test BrowserBase
 app.get('/api/test-browserbase', async (req, res) => {
   try {
     console.log('[TEST] Testing BrowserBase connection...');
@@ -157,8 +152,7 @@ app.get('/api/test-browserbase', async (req, res) => {
   }
 });
 
-// ===== NEW: DEDICATED OVERLAY CHECKER ENDPOINT =====
-// Simplified endpoint specifically for overlay checking
+// Overlay checker
 app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
   try {
     const { address, lga } = req.body;
@@ -167,7 +161,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     console.log('[OVERLAY-CHECK] Address:', address);
     console.log('[OVERLAY-CHECK] LGA:', lga);
     
-    // Validate input
     if (!address || !lga) {
       return res.status(400).json({
         success: false,
@@ -175,7 +168,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
       });
     }
     
-    // Only support Gold Coast for now
     if (lga !== 'Gold Coast') {
       return res.status(400).json({
         success: false,
@@ -185,7 +177,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     
     console.log('[OVERLAY-CHECK] Starting scrape...');
     
-    // Scrape property data
     const propertyData = await scrapeProperty(address);
     
     console.log('[OVERLAY-CHECK] Scrape complete');
@@ -194,7 +185,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
     console.log('[OVERLAY-CHECK] Has property data:', !!propertyData?.property);
     console.log('[OVERLAY-CHECK] Overlay count:', propertyData?.property?.overlays?.length || 0);
     
-    // MORE FORGIVING: Accept if we have property data with overlays, even if success isn't explicitly true
     if (propertyData?.property?.overlays && propertyData.property.overlays.length > 0) {
       console.log('[OVERLAY-CHECK] ✅ Found overlays:', propertyData.property.overlays.length);
       
@@ -210,7 +200,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
       });
     }
     
-    // If we got SOME data (zone, address, etc) but no overlays
     if (propertyData?.property) {
       console.log('[OVERLAY-CHECK] ⚠️ Property found but no overlays');
       
@@ -226,7 +215,6 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
       });
     }
     
-    // Complete failure - no property data at all
     console.log('[OVERLAY-CHECK] ❌ Property not found');
     return res.status(404).json({
       success: false,
@@ -242,7 +230,7 @@ app.post('/api/check-overlays', apiKeyAuthMiddleware, rateLimitMiddleware, async
   }
 });
 
-// ===== STAMP DUTY CALCULATOR ENDPOINTS =====
+// Stamp duty calculator
 app.post('/api/calculate-stamp-duty', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
   try {
     const { propertyValue, state, useType, isFirstHomeBuyer, isNewHome, isVacantLand, isForeign, ownershipStructure, contractDate } = req.body;
@@ -298,31 +286,7 @@ app.get('/api/stamp-duty/states', (req, res) => {
   });
 });
 
-// STREAMING advisory endpoint (with real-time progress updates)
-app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
-  // Set headers for Server-Sent Events
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  
-  const sendProgress = (message) => {
-    res.write(`data: ${JSON.stringify({ type: 'progress', message })}\n\n`);
-  };
-  
-  try {
-    const { query, conversationHistory, requestType } = req.body;
-    
-    if (!query) {
-      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Query is required' })}\n\n`);
-      res.end();
-      return;
-    }
-    
-    console.log('[ADVISE-STREAM] Query:', query);
-    console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
-
-    // ===== NEARBY DA'S ENDPOINT =====
+// Nearby DAs (PlanningAlerts)
 app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
   try {
     const { address, radius, dateFrom, dateTo } = req.body;
@@ -354,7 +318,63 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
     });
   }
 });
-    // OVERLAY-ONLY MODE: Just scrape overlays, skip Claude/RAG
+
+// ===== NEW: PDONLINE DA SEARCH =====
+app.post('/api/pdonline-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { address, months_back } = req.body;
+    
+    console.log('[PDONLINE-DAS] Request received');
+    console.log('[PDONLINE-DAS] Address:', address);
+    console.log('[PDONLINE-DAS] Months back:', months_back || 12);
+
+    if (!address) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Address is required' 
+      });
+    }
+
+    const { scrapeGoldCoastDAs } = await import('./services/pdonline-scraper.js');
+    const result = await scrapeGoldCoastDAs(address, months_back || 12);
+    
+    console.log('[PDONLINE-DAS] ✅ Found', result.count, 'applications');
+    
+    res.json(result);
+
+  } catch (error) {
+    console.error('[PDONLINE-DAS ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch development applications',
+      details: error.message
+    });
+  }
+});
+
+// Streaming advisory
+app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  
+  const sendProgress = (message) => {
+    res.write(`data: ${JSON.stringify({ type: 'progress', message })}\n\n`);
+  };
+  
+  try {
+    const { query, conversationHistory, requestType } = req.body;
+    
+    if (!query) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Query is required' })}\n\n`);
+      res.end();
+      return;
+    }
+    
+    console.log('[ADVISE-STREAM] Query:', query);
+    console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
+
     if (requestType === 'overlays-only') {
       console.log('[ADVISE-STREAM] Overlay-only mode activated');
       
@@ -374,7 +394,6 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
         
         sendProgress('✅ Overlays retrieved successfully');
         
-        // Return overlays data
         res.write(`data: ${JSON.stringify({ 
           type: 'complete',
           propertyData: {
@@ -401,19 +420,14 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
       }
     }
     
-    // STANDARD MODE: Full advisory with Claude + RAG
     sendProgress('Parsing query parameters...');
-    
     sendProgress('Connecting to Gold Coast planning database...');
-    
     sendProgress('Scraping property information...');
     
-    // Get advisory response (this calls scraper and RAG internally)
     const response = await getAdvisory(query, conversationHistory, sendProgress);
     
     sendProgress('Finalizing report...');
     
-    // Send final result
     res.write(`data: ${JSON.stringify({ 
       type: 'complete', 
       data: response,
@@ -425,7 +439,6 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
   } catch (error) {
     console.error('[ADVISE-STREAM ERROR]', error.message);
     
-    // Check if it's an Anthropic overload error
     const isOverloaded = error.message?.includes('529') || 
                          error.message?.includes('overloaded') ||
                          error.message?.includes('Overloaded');
@@ -446,16 +459,13 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
   }
 });
 
-// Main advisory endpoint (Claude + Scraper)
+// Main advisory
 app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidationMiddleware, async (req, res) => {
   try {
     console.log('=====================================');
     console.log('[ADVISE] NEW REQUEST');
     console.log('[ADVISE] Timestamp:', new Date().toISOString());
-    console.log('[ADVISE] Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('[ADVISE] Body received:', JSON.stringify(req.body, null, 2));
-    console.log('[ADVISE] Body type:', typeof req.body);
-    console.log('[ADVISE] Query field:', req.body.query);
+    console.log('[ADVISE] Query:', req.body.query);
     console.log('[ADVISE] History length:', req.body.conversationHistory?.length || 0);
     console.log('=====================================');
     
@@ -471,16 +481,9 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
     
     console.log(`[ADVISE] Processing query: "${query}"`);
     
-    // Get advisory from Claude with conversation history
     const response = await getAdvisory(query, conversationHistory);
     
     console.log('[ADVISE] Response generated');
-    console.log('[ADVISE] Response structure:', JSON.stringify({
-      hasAnswer: !!response.answer,
-      answerLength: response.answer?.length,
-      hasPropertyData: !!response.propertyData,
-      usedTool: response.usedTool
-    }, null, 2));
     
     const result = {
       success: true,
@@ -494,9 +497,7 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
     res.json(result);
   } catch (error) {
     console.error('[ADVISE ERROR]', error);
-    console.error('[ADVISE ERROR] Stack:', error.stack);
     
-    // Check if it's an Anthropic overload error
     const isOverloaded = error.message?.includes('529') || 
                          error.message?.includes('overloaded') ||
                          error.message?.includes('Overloaded');
@@ -509,7 +510,8 @@ app.post('/api/advise', apiKeyAuthMiddleware, rateLimitMiddleware, queryValidati
     });
   }
 });
-// ===== PROJECT VISUALISER ENDPOINT (FIXED) =====
+
+// Project visualizer
 app.post('/api/generate-visualization', 
   apiKeyAuthMiddleware, 
   rateLimitMiddleware, 
@@ -523,7 +525,7 @@ app.post('/api/generate-visualization',
         viewPerspective,
         timeOfDay,
         landscaping,
-        projectDescription  // ← This is the user's actual description
+        projectDescription
       } = req.body;
       
       console.log('[VISUALISER] Request received:', {
@@ -533,22 +535,17 @@ app.post('/api/generate-visualization',
         hasCustomDescription: !!projectDescription
       });
       
-      // Build prompt - USER DESCRIPTION FIRST
       let prompt = '';
       
-      // Start with user's description if provided
       if (projectDescription && projectDescription.trim()) {
         prompt = projectDescription.trim();
       } else {
-        // Fallback to structured description
         const materialsText = materials?.join(', ') || 'modern materials';
         prompt = `${developmentType || 'residential development'}, ${architecturalStyle || 'contemporary'} architecture, ${stories || 2}-storey, ${materialsText} facade`;
       }
       
-      // Add technical parameters to enhance (not override) the description
       const enhancements = [];
       
-      // View perspective
       if (viewPerspective === 'Street Level') {
         enhancements.push('street-level perspective');
       } else if (viewPerspective === 'Aerial') {
@@ -557,7 +554,6 @@ app.post('/api/generate-visualization',
         enhancements.push('three-quarter architectural view');
       }
       
-      // Lighting
       if (timeOfDay === 'Day') {
         enhancements.push('bright daylight, blue sky');
       } else if (timeOfDay === 'Dusk') {
@@ -566,7 +562,6 @@ app.post('/api/generate-visualization',
         enhancements.push('dramatic night lighting');
       }
       
-      // Landscaping context
       if (landscaping === 'Tropical') {
         enhancements.push('tropical landscaping, palm trees');
       } else if (landscaping === 'Lush') {
@@ -575,18 +570,14 @@ app.post('/api/generate-visualization',
         enhancements.push('minimalist landscaping');
       }
       
-      // Add location context
       enhancements.push('Gold Coast, Queensland, Australia');
       
-      // Quality directives - make it HYPER-REALISTIC
       const qualityTags = 'photorealistic architectural visualization, professional photography, ultra-detailed, 8K resolution, architectural digest quality, physically accurate materials and lighting';
       
-      // Combine everything
       const fullPrompt = `${prompt}, ${enhancements.join(', ')}, ${qualityTags}`;
       
       console.log('[VISUALISER] Final prompt:', fullPrompt);
       
-      // Call Replicate API with Flux Schnell
       console.log('[VISUALISER] Calling Replicate API...');
       const response = await fetch('https://api.replicate.com/v1/predictions', {
         method: 'POST',
@@ -600,8 +591,8 @@ app.post('/api/generate-visualization',
             prompt: fullPrompt,
             num_outputs: 1,
             aspect_ratio: "16:9",
-            output_format: "webp",  // ← Changed to WebP for better quality
-            output_quality: 95,     // ← Cranked up to 95
+            output_format: "webp",
+            output_quality: 95,
             disable_safety_checker: false
           }
         })
@@ -616,10 +607,9 @@ app.post('/api/generate-visualization',
       const prediction = await response.json();
       console.log('[VISUALISER] Prediction created:', prediction.id);
       
-      // Poll for completion
       let result = prediction;
       let attempts = 0;
-      const maxAttempts = 60; // 60 seconds max
+      const maxAttempts = 60;
       
       while (
         (result.status === 'starting' || result.status === 'processing') && 
@@ -646,7 +636,7 @@ app.post('/api/generate-visualization',
         res.json({
           success: true,
           imageUrl: result.output[0],
-          prompt: fullPrompt,  // Return actual prompt used
+          prompt: fullPrompt,
           timestamp: new Date().toISOString()
         });
       } else {
@@ -662,6 +652,7 @@ app.post('/api/generate-visualization',
       });
     }
 });
+
 // Start server
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
@@ -676,7 +667,9 @@ app.listen(PORT, () => {
   console.log(`   POST /api/check-overlays  ⭐`);
   console.log(`   POST /api/calculate-stamp-duty  💰`);
   console.log(`   GET  /api/stamp-duty/states  💰`);
-  console.log(`   POST /api/nearby-das  📍 NEW`);
+  console.log(`   POST /api/nearby-das  📍`);
+  console.log(`   POST /api/pdonline-das  🏗️ NEW`);
+  console.log(`   POST /api/generate-visualization  🎨`);
 });
 
 export default app;
