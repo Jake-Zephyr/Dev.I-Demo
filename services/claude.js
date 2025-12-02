@@ -172,35 +172,6 @@ User query: ${userQuery}`
           planningSchemeContext: planningContext
         };
       }
-      
-     // Handle DA search tool
-else if (toolUse.name === 'search_development_applications') {
-  if (sendProgress) sendProgress('🔍 Searching development applications...');
-  console.log('[CLAUDE] Searching DAs for:', toolUse.input.address);
-  
-  try {
-    const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
-    const daResult = await scrapeGoldCoastDAs(
-      toolUse.input.address, 
-      toolUse.input.months_back || 12
-    );
-    
-    console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-    if (sendProgress) sendProgress(`✅ Found ${daResult.count} development applications`);
-    
-    toolResult = daResult;
-  } catch (error) {
-    console.error('[CLAUDE] DA search failed:', error.message);
-    
-    // Return error result instead of throwing
-    toolResult = {
-      success: false,
-      error: error.message,
-      count: 0,
-      applications: []
-    };
-  }
-}
         
         console.log('[CLAUDE] Geocoded to:', geocoded.formatted_address);
         if (sendProgress) sendProgress('🔍 Searching development applications...');
