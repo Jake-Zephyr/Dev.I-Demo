@@ -673,9 +673,10 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/scrape/:query`);
   console.log(`   POST /api/advise`);
   console.log(`   POST /api/advise-stream`);
-  console.log(`   POST /api/check-overlays  ⭐ NEW`);
-  console.log(`   POST /api/calculate-stamp-duty  💰 NEW`);
-  console.log(`   GET  /api/stamp-duty/states  💰 NEW`);
+  console.log(`   POST /api/check-overlays  ⭐`);
+  console.log(`   POST /api/calculate-stamp-duty  💰`);
+  console.log(`   GET  /api/stamp-duty/states  💰`);
+  console.log(`   POST /api/nearby-das  📍 NEW`);
 });
 
 export default app;
