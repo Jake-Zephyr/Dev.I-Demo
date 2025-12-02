@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
-import { geocodeAddress } from './goldcoast-api.js';
+import { geocodeAddress } from './geocoder.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
