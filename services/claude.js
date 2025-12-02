@@ -25,7 +25,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     const tools = [
       {
         name: 'get_property_info',
-        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable. If the user provides an address, ask them for the lot/plan number if they have it, or explain that lot/plan gives more accurate results.',
+        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. Use this for zoning questions, planning controls, what can be built, overlay information. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
         input_schema: {
           type: 'object',
           properties: {
@@ -39,13 +39,13 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'search_development_applications',
-        description: 'Search for development applications (DAs) at a specific Gold Coast address using the PDOnline system. Returns application numbers, lodgement dates, status, descriptions, and types. Use this when users ask about DAs, development applications, or building approvals at an address.',
+        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
         input_schema: {
           type: 'object',
           properties: {
             address: {
               type: 'string',
-              description: 'Full property address in format: "43 Peerless Avenue, MERMAID BEACH, 4218"'
+              description: 'Full property address in format: "43 Peerless Avenue, MERMAID BEACH, 4218" - must include street number, street name, suburb, and postcode'
             },
             months_back: {
               type: 'number',
@@ -81,37 +81,39 @@ CORE EXPERTISE:
 - Property investment advice for Gold Coast
 
 AVAILABLE TOOLS:
-1. get_property_info: Look up zoning, overlays, planning scheme rules
-2. search_development_applications: Find DAs at a specific address
+1. get_property_info: Look up zoning, overlays, planning scheme rules (for "what can I build", "what's the zoning", "tell me about this property")
+2. search_development_applications: Find DAs at an address (for "what DAs", "any development applications", "building approvals")
+
+CRITICAL CONTEXT AWARENESS:
+- Review the conversation history carefully to understand what the user is asking about
+- If you previously asked the user for an address and they respond with just an address, understand what they want you to do with it
+- If you asked "which address would you like me to search for DAs?" and they reply "14 peerless avenue", then USE search_development_applications
+- If you asked "which property?" and they reply "12 aquila court", understand from context whether they want property info or DAs
+
+TOOL SELECTION RULES:
+- User says "DAs at [address]" or "development applications" → search_development_applications
+- User says "tell me about [address]" or "what's the zoning" → get_property_info
+- User just provides an address after you asked for one → use the tool relevant to what they were asking about
+- If user previously talked about a property and now asks "what about DAs" → use search_development_applications with that same property address
 
 RESPONSE GUIDELINES:
 1. For greetings (hi, hello, hey, etc.): Respond briefly and warmly in 1-2 sentences. Don't over-explain what you do.
 
-2. For Gold Coast property questions (lot/plan numbers or addresses): Use the get_property_info tool to look up data and provide comprehensive property advice. The tool returns:
+2. For property planning questions: Use get_property_info tool. The tool returns:
    - Property details (zone, density, area, overlays)
    - planningSchemeContext: Array of relevant sections from the official Gold Coast City Plan
    
-   IMPORTANT: The planningSchemeContext contains the actual planning scheme rules and requirements. Use this information to provide accurate, specific advice. Quote relevant sections when explaining requirements.
-   
-   Provide comprehensive planning advice including:
-   - What can be built (based on the planning scheme sections)
-   - Specific zoning requirements (from the scheme text)
-   - Density and height limits (as stated in the scheme)
-   - Overlay requirements (from the retrieved context)
-   - Next steps
+   Provide comprehensive planning advice including what can be built, requirements, and next steps.
 
-3. For DA/development application questions: Use search_development_applications tool with the address to find recent DAs, their status, and descriptions.
+3. For DA questions: Use search_development_applications tool with the full address (must include suburb and postcode).
 
-Do not overexplain and keep general responses on the shorter side unless when a longer response is neccessary
+4. When you need information: Ask clearly what you need, then when they respond, take action based on what you asked for.
 
-When using get_property_info, the tool returns property details plus planningSchemeContext with relevant City Plan sections. Quote these when explaining requirements.
+5. For general Gold Coast questions: Answer briefly, then offer to help with property matters.
 
-4. For general Gold Coast questions (mayor, council, local info, weather, etc.): Answer briefly and helpfully, then offer to help with property matters.
+6. For unrelated questions: Politely redirect to your expertise area.
 
-5. For questions completely unrelated to property or Gold Coast: Politely redirect by saying something similar to (but not exactly every time for some variety):
-   "I'm not sure what that has to do with property development! I specialise in Gold Coast property planning and development. Is there anything about Gold Coast properties or planning I can help you with?"
-
-Keep responses conversational and friendly, but stay focused on your expertise area. Use the conversation history to provide contextual responses.
+Keep responses conversational and friendly. Use conversation history to maintain context and avoid repeating yourself.
 
 User query: ${userQuery}`
     });
@@ -200,12 +202,7 @@ User query: ${userQuery}`
         max_tokens: 4096,
         tools,
         messages: [
-          {
-            role: 'user',
-            content: `You are a Gold Coast planning advisor. Help the user with their planning query.
-
-User query: ${userQuery}`
-          },
+          ...messages,
           {
             role: 'assistant',
             content: response.content
