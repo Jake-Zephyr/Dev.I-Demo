@@ -2,6 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
+import { geocodeAddress } from './geocoder.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -45,7 +46,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
           properties: {
             address: {
               type: 'string',
-              description: 'Full property address in format: "43 Peerless Avenue, MERMAID BEACH, 4218" - must include street number, street name, suburb, and postcode'
+              description: 'Street address - can be partial like "22 Mary Avenue" or full like "22 Mary Avenue, Broadbeach, 4218"'
             },
             months_back: {
               type: 'number',
@@ -85,35 +86,28 @@ AVAILABLE TOOLS:
 2. search_development_applications: Find DAs at an address (for "what DAs", "any development applications", "building approvals")
 
 CRITICAL CONTEXT AWARENESS:
-- Review the conversation history carefully to understand what the user is asking about
-- If you previously asked the user for an address and they respond with just an address, understand what they want you to do with it
-- If you asked "which address would you like me to search for DAs?" and they reply "14 peerless avenue", then USE search_development_applications
-- If you asked "which property?" and they reply "12 aquila court", understand from context whether they want property info or DAs
+- Use conversation history to understand context, but NEVER explicitly mention you're looking at history
+- If you previously asked for an address and user provides one, immediately use the appropriate tool
+- If you asked "which address for DAs?" and they reply "14 peerless avenue" → immediately use search_development_applications
+- If user previously discussed a property and asks "what about DAs" → use search_development_applications with that address
+- NEVER say "I can see from our conversation" or "based on our chat history" - just act on the context naturally
 
 TOOL SELECTION RULES:
-- User says "DAs at [address]" or "development applications" → search_development_applications
-- User says "tell me about [address]" or "what's the zoning" → get_property_info
-- User just provides an address after you asked for one → use the tool relevant to what they were asking about
-- If user previously talked about a property and now asks "what about DAs" → use search_development_applications with that same property address
+- User asks about DAs/development applications → search_development_applications
+- User asks about zoning/planning/what can be built → get_property_info
+- User provides address after you asked for one → use the tool they were asking about
+- For search_development_applications: You can accept partial addresses like "22 Mary Avenue" - the geocoder will find the full address
 
 RESPONSE GUIDELINES:
-1. For greetings (hi, hello, hey, etc.): Respond briefly and warmly in 1-2 sentences. Don't over-explain what you do.
+1. For greetings: Respond briefly and warmly in 1-2 sentences.
 
-2. For property planning questions: Use get_property_info tool. The tool returns:
-   - Property details (zone, density, area, overlays)
-   - planningSchemeContext: Array of relevant sections from the official Gold Coast City Plan
-   
-   Provide comprehensive planning advice including what can be built, requirements, and next steps.
+2. For property planning questions: Use get_property_info tool.
 
-3. For DA questions: Use search_development_applications tool with the full address (must include suburb and postcode).
+3. For DA questions: Use search_development_applications tool. Accept partial addresses - the system will geocode them.
 
-4. When you need information: Ask clearly what you need, then when they respond, take action based on what you asked for.
+4. When you need information: Ask clearly, then ACT when they respond. Don't acknowledge you're using context.
 
-5. For general Gold Coast questions: Answer briefly, then offer to help with property matters.
-
-6. For unrelated questions: Politely redirect to your expertise area.
-
-Keep responses conversational and friendly. Use conversation history to maintain context and avoid repeating yourself.
+5. Keep responses conversational and friendly. Use context silently to maintain flow.
 
 User query: ${userQuery}`
     });
@@ -181,12 +175,26 @@ User query: ${userQuery}`
       
       // Handle DA search tool
       else if (toolUse.name === 'search_development_applications') {
+        if (sendProgress) sendProgress('🔍 Geocoding address...');
+        console.log('[CLAUDE] Geocoding address:', toolUse.input.address);
+        
+        // Geocode the address to get full format
+        const geocoded = await geocodeAddress(toolUse.input.address);
+        
+        if (!geocoded || !geocoded.formatted_address) {
+          console.log('[CLAUDE] Geocoding failed');
+          return {
+            answer: `I couldn't find that address. Could you provide the full address including suburb? For example: "22 Mary Avenue, Broadbeach, 4218"`,
+            usedTool: false
+          };
+        }
+        
+        console.log('[CLAUDE] Geocoded to:', geocoded.formatted_address);
         if (sendProgress) sendProgress('🔍 Searching development applications...');
-        console.log('[CLAUDE] Searching DAs for:', toolUse.input.address);
         
         const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
         const daResult = await scrapeGoldCoastDAs(
-          toolUse.input.address, 
+          geocoded.formatted_address, 
           toolUse.input.months_back || 12
         );
         
