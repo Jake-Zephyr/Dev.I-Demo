@@ -11,7 +11,7 @@ import {
 } from './middleware/protection.js';
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
 import { calculateStampDuty } from './services/stamp-duty-calculator.js';
-
+import { getNearbyDAs } from './services/nearbyDAsService.js';
 const app = express();
 
 // Middleware
@@ -321,7 +321,39 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     
     console.log('[ADVISE-STREAM] Query:', query);
     console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
+
+    // ===== NEARBY DA'S ENDPOINT =====
+app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { address, radius, dateFrom, dateTo } = req.body;
     
+    console.log('[NEARBY-DAS] Request received');
+    console.log('[NEARBY-DAS] Address:', address);
+    console.log('[NEARBY-DAS] Radius:', radius);
+    console.log('[NEARBY-DAS] Date range:', dateFrom, 'to', dateTo);
+
+    if (!address) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Address is required' 
+      });
+    }
+
+    const result = await getNearbyDAs(address, radius, dateFrom, dateTo);
+    
+    console.log('[NEARBY-DAS] ✅ Found', result.count, 'applications');
+    
+    res.json(result);
+
+  } catch (error) {
+    console.error('[NEARBY-DAS ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch development applications',
+      details: error.message
+    });
+  }
+});
     // OVERLAY-ONLY MODE: Just scrape overlays, skip Claude/RAG
     if (requestType === 'overlays-only') {
       console.log('[ADVISE-STREAM] Overlay-only mode activated');
