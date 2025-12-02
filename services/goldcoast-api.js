@@ -182,7 +182,7 @@ async function getCadastreByLotPlan(lotplan) {
  * Geocode address with smart disambiguation
  * If address is incomplete, returns multiple suggestions
  */
-async function geocodeAddress(address) {
+export async function geocodeAddress(address) {
   console.log(`[API] Geocoding: ${address}`);
   
   // Check if address looks complete (has suburb)
