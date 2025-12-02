@@ -1,9 +1,9 @@
-const axios = require('axios');
+import axios from 'axios';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const PLANNING_ALERTS_API_KEY = process.env.PLANNING_ALERTS_API_KEY;
 
-async function getNearbyDAs(address, radius, dateFrom, dateTo) {
+export async function getNearbyDAs(address, radius, dateFrom, dateTo) {
   try {
     // Geocode address
     const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json`;
@@ -92,5 +92,3 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
   return R * c; // Distance in metres
 }
-
-module.exports = { getNearbyDAs };
