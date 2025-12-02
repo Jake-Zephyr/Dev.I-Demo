@@ -21,21 +21,42 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
     console.log('=====================================');
 
-    // Define the tool for property lookup
-    const tools = [{
-      name: 'get_property_info',
-      description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable. If the user provides an address, ask them for the lot/plan number if they have it, or explain that lot/plan gives more accurate results.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
-          }
-        },
-        required: ['query']
+    // Define the tools for property lookup and DA search
+    const tools = [
+      {
+        name: 'get_property_info',
+        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable. If the user provides an address, ask them for the lot/plan number if they have it, or explain that lot/plan gives more accurate results.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
+            }
+          },
+          required: ['query']
+        }
+      },
+      {
+        name: 'search_development_applications',
+        description: 'Search for development applications (DAs) at a specific Gold Coast address using the PDOnline system. Returns application numbers, lodgement dates, status, descriptions, and types. Use this when users ask about DAs, development applications, or building approvals at an address.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            address: {
+              type: 'string',
+              description: 'Full property address in format: "43 Peerless Avenue, MERMAID BEACH, 4218"'
+            },
+            months_back: {
+              type: 'number',
+              description: 'How many months back to search (default 12)',
+              default: 12
+            }
+          },
+          required: ['address']
+        }
       }
-    }];
+    ];
 
     // Build messages array with conversation history
     const messages = [];
@@ -59,10 +80,14 @@ CORE EXPERTISE:
 - Development applications and approvals
 - Property investment advice for Gold Coast
 
+AVAILABLE TOOLS:
+1. get_property_info: Look up zoning, overlays, planning scheme rules
+2. search_development_applications: Find DAs at a specific address
 
 RESPONSE GUIDELINES:
-1.  For greetings (hi, hello, hey, etc.): Respond briefly and warmly in 1-2 sentences. Don't over-explain what you do.
-    For Gold Coast property questions (lot/plan numbers or addresses): Use the get_property_info tool to look up data and provide comprehensive property advice. The tool returns:
+1. For greetings (hi, hello, hey, etc.): Respond briefly and warmly in 1-2 sentences. Don't over-explain what you do.
+
+2. For Gold Coast property questions (lot/plan numbers or addresses): Use the get_property_info tool to look up data and provide comprehensive property advice. The tool returns:
    - Property details (zone, density, area, overlays)
    - planningSchemeContext: Array of relevant sections from the official Gold Coast City Plan
    
@@ -75,13 +100,15 @@ RESPONSE GUIDELINES:
    - Overlay requirements (from the retrieved context)
    - Next steps
 
+3. For DA/development application questions: Use search_development_applications tool with the address to find recent DAs, their status, and descriptions.
+
 Do not overexplain and keep general responses on the shorter side unless when a longer response is neccessary
 
 When using get_property_info, the tool returns property details plus planningSchemeContext with relevant City Plan sections. Quote these when explaining requirements.
 
-2. For general Gold Coast questions (mayor, council, local info, weather, etc.): Answer briefly and helpfully, then offer to help with property matters.
+4. For general Gold Coast questions (mayor, council, local info, weather, etc.): Answer briefly and helpfully, then offer to help with property matters.
 
-3. For questions completely unrelated to property or Gold Coast: Politely redirect by saying something similar to (but not exactly every time for some variety):
+5. For questions completely unrelated to property or Gold Coast: Politely redirect by saying something similar to (but not exactly every time for some variety):
    "I'm not sure what that has to do with property development! I specialise in Gold Coast property planning and development. Is there anything about Gold Coast properties or planning I can help you with?"
 
 Keep responses conversational and friendly, but stay focused on your expertise area. Use the conversation history to provide contextual responses.
@@ -102,7 +129,7 @@ User query: ${userQuery}`
     console.log('[CLAUDE] Initial response received');
     console.log('[CLAUDE] Response content types:', response.content.map(c => c.type));
 
-    // Check if Claude wants to use the tool
+    // Check if Claude wants to use any tool
     const toolUse = response.content.find(c => c.type === 'tool_use');
 
     if (toolUse) {
@@ -111,40 +138,61 @@ User query: ${userQuery}`
       console.log(`[CLAUDE] Tool input:`, JSON.stringify(toolUse.input, null, 2));
       console.log('=====================================');
 
-      // Call the scraper
-      if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
-      const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
+      let toolResult;
 
-      // Check if disambiguation is needed
-      if (propertyData.needsDisambiguation) {
-        console.log('[CLAUDE] Disambiguation needed, asking user...');
+      // Handle property info tool
+      if (toolUse.name === 'get_property_info') {
+        if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
+        const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
+
+        // Check if disambiguation is needed
+        if (propertyData.needsDisambiguation) {
+          console.log('[CLAUDE] Disambiguation needed, asking user...');
+          
+          const suggestionsList = propertyData.suggestions
+            .map((s, i) => `${i + 1}. ${s.address}`)
+            .join('\n');
+          
+          return {
+            answer: `I found multiple properties matching "${propertyData.originalQuery}". Please specify which one:\n\n${suggestionsList}\n\nWhich property would you like information about?`,
+            usedTool: 'get_property_info',
+            propertyData: null
+          };
+        }
+
+        console.log('[CLAUDE] Property data retrieved');
+
+        // Search for relevant planning scheme information
+        if (sendProgress) sendProgress('🧠 Searching planning regulations database...');
+        console.log('[CLAUDE] Searching planning scheme database...');
+        const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
+        console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
         
-        const suggestionsList = propertyData.suggestions
-          .map((s, i) => `${i + 1}. ${s.address}`)
-          .join('\n');
+        if (sendProgress) sendProgress('✍️ Compiling comprehensive property report...');
         
-        return {
-          answer: `I found multiple properties matching "${propertyData.originalQuery}". Please specify which one:\n\n${suggestionsList}\n\nWhich property would you like information about?`,
-          usedTool: 'get_property_info',
-          propertyData: null
+        // Combine property data with planning context
+        toolResult = {
+          ...propertyData,
+          planningSchemeContext: planningContext
         };
       }
-
-      console.log('[CLAUDE] Property data retrieved');
-
-      // Search for relevant planning scheme information
-      if (sendProgress) sendProgress('🧠 Searching planning regulations database...');
-      console.log('[CLAUDE] Searching planning scheme database...');
-      const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
-      console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
       
-      if (sendProgress) sendProgress('✍️ Compiling comprehensive property report...');
-      
-      // Combine property data with planning context
-      const enrichedData = {
-        ...propertyData,
-        planningSchemeContext: planningContext
-      };
+      // Handle DA search tool
+      else if (toolUse.name === 'search_development_applications') {
+        if (sendProgress) sendProgress('🔍 Searching development applications...');
+        console.log('[CLAUDE] Searching DAs for:', toolUse.input.address);
+        
+        const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
+        const daResult = await scrapeGoldCoastDAs(
+          toolUse.input.address, 
+          toolUse.input.months_back || 12
+        );
+        
+        console.log(`[CLAUDE] Found ${daResult.count} DAs`);
+        if (sendProgress) sendProgress(`✅ Found ${daResult.count} development applications`);
+        
+        toolResult = daResult;
+      }
 
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
@@ -167,7 +215,7 @@ User query: ${userQuery}`
             content: [{
               type: 'tool_result',
               tool_use_id: toolUse.id,
-              content: JSON.stringify(enrichedData, null, 2)
+              content: JSON.stringify(toolResult, null, 2)
             }]
           }
         ]
@@ -180,9 +228,10 @@ User query: ${userQuery}`
       
       return {
         answer: textContent?.text || 'Unable to generate response',
-        propertyData,
+        propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
+        daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         usedTool: true,
-        toolQuery: toolUse.input.query
+        toolQuery: toolUse.input.query || toolUse.input.address
       };
     } else {
       // Claude answered without needing to scrape
