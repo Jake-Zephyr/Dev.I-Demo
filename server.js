@@ -12,13 +12,15 @@ import {
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
 import { calculateStampDuty } from './services/stamp-duty-calculator.js';
 
-// Nearby DAs service (optional)
+// Nearby DAs service
 let getNearbyDAs = async () => ({ success: false, error: 'Service not available' });
 try {
   const module = await import('./services/nearbyDAsService.js');
   getNearbyDAs = module.getNearbyDAs;
+  console.log('[NEARBY-DAS] ✅ Service loaded successfully');
 } catch (e) {
-  console.log('[WARNING] nearbyDAsService not available');
+  console.error('[NEARBY-DAS] ❌ Failed to load service:', e.message);
+  console.error('[NEARBY-DAS] Stack:', e.stack);
 }
 
 const app = express();
