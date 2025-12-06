@@ -662,7 +662,43 @@ app.post('/api/generate-visualization',
       });
     }
 });
+// ===== ADDRESS AUTOCOMPLETE (Google Places) =====
+app.post('/api/address-autocomplete', apiKeyAuthMiddleware, async (req, res) => {
+  try {
+    const { input, country } = req.body;
+    
+    if (!input || input.length < 3) {
+      return res.json({ success: true, predictions: [] });
+    }
 
+    const response = await fetch(
+      `https://maps.googleapis.com/maps/api/place/autocomplete/json?` +
+      `input=${encodeURIComponent(input)}` +
+      `&types=address` +
+      `&components=country:${country || 'au'}` +
+      `&key=${process.env.GOOGLE_MAPS_API_KEY}`
+    );
+
+    const data = await response.json();
+    
+    if (data.status === 'OK') {
+      res.json({
+        success: true,
+        predictions: data.predictions.map(p => ({
+          place_id: p.place_id,
+          description: p.description
+        }))
+      });
+    } else {
+      console.log('[AUTOCOMPLETE] Google API status:', data.status);
+      res.json({ success: true, predictions: [] });
+    }
+
+  } catch (error) {
+    console.error('[AUTOCOMPLETE ERROR]', error);
+    res.json({ success: true, predictions: [] });
+  }
+});
 // Start server
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
