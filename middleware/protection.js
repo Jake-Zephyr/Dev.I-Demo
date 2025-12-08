@@ -8,8 +8,8 @@
 class RateLimiter {
   constructor() {
     this.requests = new Map(); // IP -> [{timestamp, cost}, ...]
-    this.hourlyBudget = parseFloat(process.env.HOURLY_BUDGET_LIMIT || '10'); // $10/hour default
-    this.dailyBudget = parseFloat(process.env.DAILY_BUDGET_LIMIT || '50'); // $50/day default
+    this.hourlyBudget = parseFloat(process.env.HOURLY_BUDGET_LIMIT || '25'); // $25/hour default
+    this.dailyBudget = parseFloat(process.env.DAILY_BUDGET_LIMIT || '100'); // $100/day default
     this.totalSpent = { hour: 0, day: 0, lastHourReset: Date.now(), lastDayReset: Date.now() };
   }
 
@@ -50,20 +50,20 @@ class RateLimiter {
     const requests = this.requests.get(ip) || [];
     const now = Date.now();
     
-    // Limits per IP
+    // Limits per IP - INCREASED for conversational flows
     const oneMinuteAgo = now - 60 * 1000;
     const oneHourAgo = now - 60 * 60 * 1000;
     
     const requestsLastMinute = requests.filter(r => r.timestamp > oneMinuteAgo).length;
     const requestsLastHour = requests.filter(r => r.timestamp > oneHourAgo).length;
     
-    // Rate limits - adjusted for real users
-    if (requestsLastMinute >= 5) {  // 5 requests per minute (blocks rapid spam)
-      return { allowed: false, reason: 'Too many requests (max 5/minute). Please slow down.' };
+    // Rate limits - adjusted for real conversational use
+    if (requestsLastMinute >= 15) {  // 15 requests per minute (allows rapid back-and-forth)
+      return { allowed: false, reason: 'Too many requests (max 15/minute). Please slow down.' };
     }
     
-    if (requestsLastHour >= 50) {  // 50 requests per hour (reasonable for real users)
-      return { allowed: false, reason: 'Too many requests (max 50/hour). Take a break!' };
+    if (requestsLastHour >= 200) {  // 200 requests per hour (reasonable for power users)
+      return { allowed: false, reason: 'Hourly limit reached (max 200/hour). Take a break!' };
     }
     
     // Budget limits
@@ -81,7 +81,7 @@ class RateLimiter {
   /**
    * Record a request
    */
-  recordRequest(ip, estimatedCost = 0.50) {
+  recordRequest(ip, estimatedCost = 0.02) {  // Reduced default cost estimate
     const requests = this.requests.get(ip) || [];
     requests.push({ timestamp: Date.now(), cost: estimatedCost });
     this.requests.set(ip, requests);
@@ -124,8 +124,8 @@ export function rateLimitMiddleware(req, res, next) {
     });
   }
   
-  // Estimate cost: ~$0.30 for scraping + ~$0.20 for Claude = $0.50 per request
-  rateLimiter.recordRequest(ip, 0.50);
+  // Lower cost estimate for chat messages (most don't use expensive tools)
+  rateLimiter.recordRequest(ip, 0.02);
   
   next();
 }
@@ -144,10 +144,10 @@ export function queryValidationMiddleware(req, res, next) {
   }
   
   // Prevent extremely long queries
-  if (query.length > 500) {
+  if (query.length > 1000) {
     return res.status(400).json({
       error: 'Query too long',
-      message: 'Query must be less than 500 characters'
+      message: 'Query must be less than 1000 characters'
     });
   }
   
