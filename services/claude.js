@@ -8,6 +8,32 @@ const anthropic = new Anthropic({
 });
 
 /**
+ * Strip markdown formatting from Claude's response
+ * Safety net because Claude sometimes ignores instructions
+ */
+function stripMarkdown(text) {
+  if (!text) return text;
+  
+  return text
+    // Remove all asterisks used for bold/italic (keep the text between them)
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    // Remove any remaining standalone asterisks
+    .replace(/\*/g, '')
+    // Remove ## headers
+    .replace(/^#{1,6}\s*/gm, '')
+    // Remove bullet points (dash or bullet character)
+    .replace(/^[\-•]\s*/gm, '')
+    // Remove numbered lists
+    .replace(/^\d+[\.\)]\s*/gm, '')
+    // Clean up multiple newlines (keep max 2)
+    .replace(/\n{3,}/g, '\n\n')
+    // Clean up double spaces
+    .replace(/  +/g, ' ')
+    .trim();
+}
+
+/**
  * Get planning advisory from Claude with function calling
  * Claude will automatically call the scraper when needed
  */
@@ -56,42 +82,26 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       }
     ];
 
-    const systemPrompt = `You are Dev.i, a friendly Gold Coast planning advisor. You chat like a knowledgeable consultant having a real conversation.
+    const systemPrompt = `You are Dev.i, a friendly Gold Coast planning advisor.
 
-FORMATTING RULES:
-You have a bad habit of using **asterisks** around words for emphasis. STOP DOING THIS.
+CRITICAL RULE - NO ASTERISKS:
+Never use the asterisk character (*) anywhere in your response. Not for bold, not for bullets, not for emphasis, not for anything. The asterisk key on your keyboard is broken. If you use even one asterisk, the response will crash.
 
-Never use:
-- Double asterisks like **this**
-- Single asterisks like *this*  
-- Hash symbols for headers
-- Dashes or bullets at the start of lines
+CRITICAL RULE - NO HASH SYMBOLS:
+Never use # for headers. Just write in paragraphs.
 
-Write in plain flowing paragraphs. If you want to emphasize something, just say it clearly — the words themselves should carry the weight, not formatting.
+CRITICAL RULE - NO EMOJIS AS BULLETS:
+Don't start lines with emojis like 📋 or 🏗️ as bullet points.
 
-CONTENT GUIDELINES:
-Give thorough, helpful answers. You can write 2-4 paragraphs when the question warrants it. Cover the important angles: what they can build, key constraints, practical considerations, and a suggested path forward.
+FORMAT:
+Write in natural flowing paragraphs. Separate your thoughts with line breaks between paragraphs. Like a normal person writing an email or text message.
 
-The user sees basic property data (zone, height, overlays) in a sidebar. Don't just recite those facts back. Instead, explain what they mean in practice and how they interact with each other.
+When listing things, write them conversationally within a sentence: "The main options are apartments, townhouses, or a single dwelling" — not as a formatted list.
 
-TONE:
-Sound like a planning consultant explaining things over coffee. Knowledgeable but approachable. Use plain language, not jargon. It's fine to give your professional opinion on what makes sense.
+CONTENT:
+You're knowledgeable and helpful. Give thorough answers in 2-4 paragraphs. The user can see property data (zone, height, overlays) in a sidebar, so focus on what the data means rather than reciting it.
 
-EXAMPLE OF GOOD RESPONSE:
-
-"This is a really nice development opportunity. The RD5 zoning on a 183sqm beachside lot gives you solid density allowance, enough for a boutique 2-3 unit apartment building up to about 4 storeys. Given the lot size, you're probably looking at around 3-4 bedrooms total, so maybe two 2-bedroom units and a 1-bedroom.
-
-The main constraints to work with are the foreshore setback requirements since you're so close to the beach, and you'll need flood-resilient design for the ground floor given the low elevation. The airport height limits might also trim your allowable height slightly depending on exactly where you fall in the contours.
-
-For a premium beachside location like this, I'd lean toward the apartment option rather than townhouses or a single house. You'll maximize the value of the zoning, and there's strong rental and resale demand for well-designed beachside units. Worth checking what others have built nearby to see what Council has approved recently."
-
-EXAMPLE OF BAD RESPONSE (never do this):
-
-"**Multi-unit apartments** - Your best option. RD5 lets you go up to 15 metres.
-**Townhouses** - Also works but same bedroom limits.
-**Single house** - Allowed but a waste of the zoning."
-
-Write in flowing prose, not formatted lists.`;
+Sound like a planning consultant chatting over coffee — professional but approachable.`;
 
     // Build messages array with conversation history
     const messages = [];
@@ -215,7 +225,7 @@ Write in flowing prose, not formatted lists.`;
       const textContent = finalResponse.content.find(c => c.type === 'text');
       
       return {
-        answer: textContent?.text || 'Unable to generate response',
+        answer: stripMarkdown(textContent?.text) || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         usedTool: true,
@@ -228,7 +238,7 @@ Write in flowing prose, not formatted lists.`;
       const textContent = response.content.find(c => c.type === 'text');
       
       return {
-        answer: textContent?.text || 'Unable to generate response',
+        answer: stripMarkdown(textContent?.text) || 'Unable to generate response',
         propertyData: null,
         usedTool: false
       };
