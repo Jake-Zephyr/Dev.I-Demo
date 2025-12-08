@@ -40,38 +40,42 @@ function stripMarkdown(text) {
 function formatIntoParagraphs(text) {
   if (!text) return text;
   
-  // First, normalize existing line breaks to spaces (to work with walls of text)
+  // Normalize to single spaces
   let normalized = text.replace(/\n+/g, ' ').replace(/  +/g, ' ').trim();
   
-  // Split into sentences (handle common abbreviations)
-  const sentenceEnders = /(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e))\.\s+(?=[A-Z])/g;
-  const sentences = normalized.split(sentenceEnders);
+  // Simple sentence split: period followed by space and capital letter
+  // This regex actually splits and keeps the period with the sentence
+  const sentences = [];
+  let current = '';
   
-  if (sentences.length <= 3) {
-    return text; // Short response, leave as-is
+  for (let i = 0; i < normalized.length; i++) {
+    current += normalized[i];
+    
+    // Check for sentence end: period + space + capital letter (or end of string)
+    if (normalized[i] === '.' && 
+        (i === normalized.length - 1 || 
+         (normalized[i + 1] === ' ' && /[A-Z]/.test(normalized[i + 2] || '')))) {
+      sentences.push(current.trim());
+      current = '';
+      i++; // Skip the space
+    }
   }
   
-  // Group into paragraphs of 2-3 sentences
+  // Don't forget leftover text
+  if (current.trim()) {
+    sentences.push(current.trim());
+  }
+  
+  // If 3 or fewer sentences, return as-is
+  if (sentences.length <= 3) {
+    return sentences.join(' ');
+  }
+  
+  // Group into paragraphs of 3 sentences each
   const paragraphs = [];
-  let currentParagraph = [];
-  
-  sentences.forEach((sentence, index) => {
-    // Add period back if it was removed during split
-    const cleanSentence = sentence.trim();
-    if (!cleanSentence) return;
-    
-    currentParagraph.push(cleanSentence.endsWith('.') ? cleanSentence : cleanSentence + '.');
-    
-    // Create paragraph break every 2-3 sentences
-    if (currentParagraph.length >= 2 && (currentParagraph.length >= 3 || index === sentences.length - 1)) {
-      paragraphs.push(currentParagraph.join(' '));
-      currentParagraph = [];
-    }
-  });
-  
-  // Don't forget remaining sentences
-  if (currentParagraph.length > 0) {
-    paragraphs.push(currentParagraph.join(' '));
+  for (let i = 0; i < sentences.length; i += 3) {
+    const group = sentences.slice(i, i + 3);
+    paragraphs.push(group.join(' '));
   }
   
   return paragraphs.join('\n\n');
@@ -235,14 +239,33 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
         if (sendProgress) sendProgress('🔍 Searching development applications...');
         console.log('[CLAUDE] Searching DAs for:', toolUse.input.address);
         
-        const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
-        const daResult = await scrapeGoldCoastDAs(
-          toolUse.input.address, 
-          toolUse.input.months_back || 12
-        );
-        
-        console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-        if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
+        try {
+          const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
+          const daResult = await scrapeGoldCoastDAs(
+            toolUse.input.address, 
+            toolUse.input.months_back || 12
+          );
+          
+          console.log(`[CLAUDE] Found ${daResult.count} DAs`);
+          if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
+          
+          toolResult = daResult;
+        } catch (daError) {
+          console.error('[CLAUDE] DA search failed:', daError.message);
+          console.error('[CLAUDE] DA search stack:', daError.stack);
+          
+          // Return a graceful failure message instead of crashing
+          toolResult = {
+            success: false,
+            count: 0,
+            applications: [],
+            error: daError.message,
+            errorType: 'DA_SEARCH_FAILED'
+          };
+          
+          if (sendProgress) sendProgress('⚠️ DA search encountered an issue');
+        }
+      }
         
         toolResult = daResult;
       }
@@ -296,18 +319,43 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
     }
 
   } catch (error) {
-    console.error('[CLAUDE ERROR]', error);
+    console.error('[CLAUDE ERROR]', error.message);
+    console.error('[CLAUDE ERROR STACK]', error.stack);
     
-    if (error.message.includes('Scraping failed') || error.message.includes('Timeout')) {
+    // Handle specific error types gracefully
+    if (error.message.includes('Scraping failed') || 
+        error.message.includes('Timeout') ||
+        error.message.includes('BrowserBase') ||
+        error.message.includes('PDOnline') ||
+        error.message.includes('ECONNREFUSED') ||
+        error.message.includes('ETIMEDOUT')) {
       return {
-        answer: "Having trouble reaching the Gold Coast planning database right now. Could you try again in a moment? In the meantime, I'm happy to answer general planning questions.",
+        answer: "I'm having trouble connecting to the council database right now. This happens occasionally when the service is busy. Could you try asking again?",
         propertyData: null,
         usedTool: false,
         error: error.message
       };
     }
     
-    throw new Error(`Advisory generation failed: ${error.message}`);
+    // Handle Anthropic API errors
+    if (error.message.includes('529') || 
+        error.message.includes('overloaded') ||
+        error.message.includes('rate_limit')) {
+      return {
+        answer: "I'm experiencing high demand right now. Please try again in a moment.",
+        propertyData: null,
+        usedTool: false,
+        error: error.message
+      };
+    }
+    
+    // Generic fallback - don't crash, return a message
+    return {
+      answer: "Something went wrong on my end. Could you try rephrasing your question or try again?",
+      propertyData: null,
+      usedTool: false,
+      error: error.message
+    };
   }
 }
 
