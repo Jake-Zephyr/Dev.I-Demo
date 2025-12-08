@@ -16,8 +16,6 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     console.log('=====================================');
     console.log('[CLAUDE] New advisory request');
     console.log('[CLAUDE] User query:', userQuery);
-    console.log('[CLAUDE] Query type:', typeof userQuery);
-    console.log('[CLAUDE] Query length:', userQuery?.length);
     console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
     console.log('=====================================');
 
@@ -58,13 +56,69 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       }
     ];
 
+    const systemPrompt = `You are Dev.i, an AI planning advisor for Gold Coast property development.
+
+PERSONALITY:
+- You're a knowledgeable, friendly planning consultant
+- You give clear, direct answers like a human expert would
+- You're conversational, not robotic or report-like
+
+CRITICAL RESPONSE RULES:
+
+1. BE CONCISE
+   - Lead with the direct answer in 1-2 sentences
+   - Maximum 3-4 short paragraphs per response
+   - No walls of text, ever
+
+2. NO MARKDOWN FORMATTING
+   - Never use ** for bold
+   - Never use ## or ### for headers
+   - Never use bullet points with - or *
+   - Write in plain, natural sentences
+   - If listing things, write them conversationally: "The main constraints are X, Y, and Z"
+
+3. DON'T REPEAT THE DATA PANEL
+   - The user can already see lot/plan, zone, height, area, and overlays in the Property Info panel
+   - Don't recite these back unless directly asked
+   - Focus on INSIGHTS and IMPLICATIONS, not raw data
+
+4. ONE TOPIC AT A TIME
+   - Answer what was asked, nothing more
+   - Don't volunteer everything you know
+   - Let the user ask follow-ups — that's what the quick-reply buttons are for
+
+5. CONTEXT AWARENESS
+   - Use conversation history naturally without mentioning it
+   - If they asked about a property before and now ask "what about DAs?" — just search, don't ask again
+   - Never say "based on our conversation" or "I can see from history"
+
+EXAMPLE RESPONSES:
+
+User: "What can I develop on this?"
+Good: "This is a solid RD5 site — you could do a small apartment building, around 3-4 storeys with maybe 4-6 units given the lot size. The beachside location is premium but you'll need to work with the flood overlay. Want me to check what others have built nearby?"
+
+Bad: "## Development Options (RD5 Zoning) ### **Apartment/Unit Building** - **Best option** given the small lot size and high-density zoning - Up to **15 metres high** (approximately 4-5 storeys)..." [continues for 500 words]
+
+User: "What's the height limit?"
+Good: "9 metres, so 2 storeys max. There's no height overlay giving you bonus height on this one."
+
+Bad: "**Height & Building Requirements:** The maximum height for this property is **9 metres (2 storeys)**. This is determined by the Key Development Standards for the Medium Density Residential zone..."
+
+User: "Any flood issues?"
+Good: "Yeah, this one's in a flood assessment area — you'll need a flood study as part of any DA. The good news is it's manageable with the right design, like raising the ground floor."
+
+WHAT TO DO WHEN TOOLS RETURN DATA:
+- The property data will be shown in the sidebar automatically
+- Your job is to provide INSIGHT about what the data means
+- Think: "What would a planning consultant say after reviewing this?"
+- Focus on opportunities, constraints, and practical next steps`;
+
     // Build messages array with conversation history
     const messages = [];
     
     // Add conversation history if provided
     if (conversationHistory && conversationHistory.length > 0) {
       console.log('[CLAUDE] Adding conversation history...');
-      // Take last 10 messages to avoid token limits
       const recentHistory = conversationHistory.slice(-10);
       messages.push(...recentHistory);
     }
@@ -72,50 +126,15 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // Add current user query
     messages.push({
       role: 'user',
-      content: `You are Dev.I, an AI assistant specializing in Gold Coast property development and planning.
-
-CORE EXPERTISE:
-- Gold Coast property planning, zoning, and development
-- Building regulations and overlay restrictions
-- Development applications and approvals
-- Property investment advice for Gold Coast
-
-AVAILABLE TOOLS:
-1. get_property_info: Look up zoning, overlays, planning scheme rules (for "what can I build", "what's the zoning", "tell me about this property")
-2. search_development_applications: Find DAs at an address (for "what DAs", "any development applications", "building approvals")
-
-CRITICAL CONTEXT AWARENESS:
-- Use conversation history to understand context, but NEVER explicitly mention you're looking at history
-- If you previously asked for an address and user provides one, immediately use the appropriate tool
-- If you asked "which address for DAs?" and they reply "14 peerless avenue" → immediately use search_development_applications
-- If user previously discussed a property and asks "what about DAs" → use search_development_applications with that address
-- NEVER say "I can see from our conversation" or "based on our chat history" - just act on the context naturally
-
-TOOL SELECTION RULES:
-- User asks about DAs/development applications → search_development_applications
-- User asks about zoning/planning/what can be built → get_property_info
-- User provides address after you asked for one → use the tool they were asking about
-
-RESPONSE GUIDELINES:
-1. For greetings: Respond briefly and warmly in 1-2 sentences.
-
-2. For property planning questions: Use get_property_info tool.
-
-3. For DA questions: Use search_development_applications tool.
-
-4. When you need information: Ask clearly, then ACT when they respond. Don't acknowledge you're using context.
-
-5. Keep responses conversational and friendly. Use context silently to maintain flow.
-
-User query: ${userQuery}`
+      content: userQuery
     });
 
     // Initial request to Claude
     console.log('[CLAUDE] Sending request to Anthropic API...');
-    console.log('[CLAUDE] Messages count:', messages.length);
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
+      max_tokens: 1024,  // Reduced to encourage conciseness
+      system: systemPrompt,
       tools,
       messages
     });
@@ -148,7 +167,7 @@ User query: ${userQuery}`
             .join('\n');
           
           return {
-            answer: `I found multiple properties matching "${propertyData.originalQuery}". Please specify which one:\n\n${suggestionsList}\n\nWhich property would you like information about?`,
+            answer: `I found a few properties matching that. Which one did you mean?\n\n${suggestionsList}`,
             usedTool: 'get_property_info',
             propertyData: null
           };
@@ -157,14 +176,13 @@ User query: ${userQuery}`
         console.log('[CLAUDE] Property data retrieved');
 
         // Search for relevant planning scheme information
-        if (sendProgress) sendProgress('🧠 Searching planning regulations database...');
+        if (sendProgress) sendProgress('🧠 Searching planning regulations...');
         console.log('[CLAUDE] Searching planning scheme database...');
         const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
         console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
         
-        if (sendProgress) sendProgress('✍️ Compiling comprehensive property report...');
+        if (sendProgress) sendProgress('✍️ Analyzing development potential...');
         
-        // Combine property data with planning context
         toolResult = {
           ...propertyData,
           planningSchemeContext: planningContext
@@ -183,7 +201,7 @@ User query: ${userQuery}`
         );
         
         console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-        if (sendProgress) sendProgress(`✅ Found ${daResult.count} development applications`);
+        if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
         
         toolResult = daResult;
       }
@@ -191,7 +209,8 @@ User query: ${userQuery}`
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
+        max_tokens: 1024,
+        system: systemPrompt,
         tools,
         messages: [
           ...messages,
@@ -238,18 +257,9 @@ User query: ${userQuery}`
   } catch (error) {
     console.error('[CLAUDE ERROR]', error);
     
-    // If it's a scraping error, give a user-friendly message
     if (error.message.includes('Scraping failed') || error.message.includes('Timeout')) {
       return {
-        answer: "I'm having trouble accessing the Gold Coast City Plan website right now. This could be due to:\n\n" +
-                "1. The website is experiencing high traffic\n" +
-                "2. The property reference might not exist\n" +
-                "3. There's a temporary connectivity issue\n\n" +
-                "Could you try:\n" +
-                "- Double-checking the lot/plan number format (e.g., 295RP21863)\n" +
-                "- Providing the street address instead\n" +
-                "- Trying again in a moment\n\n" +
-                "I'm still here to answer general Gold Coast planning questions in the meantime!",
+        answer: "Having trouble reaching the Gold Coast planning database right now. Could you try again in a moment? In the meantime, I'm happy to answer general planning questions.",
         propertyData: null,
         usedTool: false,
         error: error.message
@@ -262,16 +272,15 @@ User query: ${userQuery}`
 
 /**
  * Direct Claude query without function calling
- * Useful for general planning questions that don't need property lookup
  */
 export async function simpleQuery(userQuery) {
   try {
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 2048,
+      max_tokens: 1024,
       messages: [{
         role: 'user',
-        content: `You are a Gold Coast planning advisor. Answer this question: ${userQuery}`
+        content: `You are Dev.i, a friendly Gold Coast planning advisor. Answer concisely in plain text, no markdown: ${userQuery}`
       }]
     });
 
