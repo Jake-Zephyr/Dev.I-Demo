@@ -93,7 +93,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
     console.log('=====================================');
 
-    // Define the tools for property lookup and DA search
+    // Define the tools for property lookup, DA search, and feasibility
     const tools = [
       {
         name: 'get_property_info',
@@ -127,6 +127,91 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
           },
           required: ['address']
         }
+      },
+      {
+        name: 'start_feasibility',
+        description: 'Start a feasibility analysis for a property. Use when user asks to "run a feaso", "do a feasibility", "check the numbers", or similar. Returns options for quick or detailed analysis with pre-filled property data.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            propertyAddress: {
+              type: 'string',
+              description: 'The property address to run feasibility on'
+            },
+            siteArea: {
+              type: 'number',
+              description: 'Site area in sqm (from previous property lookup)'
+            },
+            densityCode: {
+              type: 'string',
+              description: 'Density code like RD3, RD5 etc (from previous property lookup)'
+            },
+            heightLimit: {
+              type: 'string',
+              description: 'Height limit like "9m" or "15 metres" (from previous property lookup)'
+            },
+            zone: {
+              type: 'string',
+              description: 'Zone name (from previous property lookup)'
+            }
+          },
+          required: ['propertyAddress']
+        }
+      },
+      {
+        name: 'calculate_quick_feasibility',
+        description: 'Calculate a quick feasibility analysis with minimal inputs. Use after user has provided: purchase price, number of units, and target sale price. Other values use sensible defaults.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            propertyAddress: {
+              type: 'string',
+              description: 'Property address'
+            },
+            siteArea: {
+              type: 'number',
+              description: 'Site area in sqm'
+            },
+            densityCode: {
+              type: 'string',
+              description: 'Density code (RD1-RD8)'
+            },
+            heightLimit: {
+              type: 'string',
+              description: 'Height limit'
+            },
+            purchasePrice: {
+              type: 'number',
+              description: 'Land/property purchase price'
+            },
+            numUnits: {
+              type: 'number',
+              description: 'Number of units to develop'
+            },
+            targetSalePricePerUnit: {
+              type: 'number',
+              description: 'Target sale price per unit'
+            },
+            developmentType: {
+              type: 'string',
+              enum: ['apartments', 'townhouses', 'duplex', 'house'],
+              description: 'Type of development'
+            },
+            constructionCostPerSqm: {
+              type: 'number',
+              description: 'Construction cost per sqm of GFA (default 4000)'
+            },
+            avgUnitSize: {
+              type: 'number',
+              description: 'Average unit size in sqm (default 85)'
+            },
+            targetMarginPercent: {
+              type: 'number',
+              description: 'Target profit margin percentage (default 20)'
+            }
+          },
+          required: ['purchasePrice', 'numUnits', 'targetSalePricePerUnit']
+        }
       }
     ];
 
@@ -149,15 +234,47 @@ When you receive DA search results, ALWAYS list ALL applications found in a clea
 2. [Application Number] - [Type] - Lodged [Date] - Status: [Status if known]
    [Brief description if available]"
 
-Then provide your analysis of what these DAs tell us about the site. Never summarize or skip any DAs - list them all, then discuss.
+Then provide your analysis. Never skip any DAs.
 
-If the user asks for more details on a specific DA, provide everything you know about that one.
+RULE 4 - FEASIBILITY ANALYSIS:
+When user asks to "run a feaso", "do feasibility", "check the numbers", "is this site viable" etc:
 
-RULE 4 - LENGTH:
-Keep responses to 150-250 words total. Be helpful but concise. Don't over-explain.
+1. Use start_feasibility tool with property data you already have from earlier in conversation
+2. Present TWO options to the user:
+   - Quick Feaso: "Quick analysis using industry-standard assumptions - I'll ask you 4-5 key questions"
+   - Detailed Analysis: "Full detailed form with all inputs - opens the complete feasibility calculator"
+3. Return the response with feasibilityMode set appropriately
+
+For QUICK FEASO flow (after user chooses quick):
+Ask these questions ONE AT A TIME with button options where applicable:
+
+Q1: "What type of development?" → buttons: [Apartments] [Townhouses] [Duplex]
+Q2: "How many units are you thinking?" → buttons based on capacity: [2] [3] [4] [6] [Custom]
+Q3: "What's your estimated purchase price for the land?" → conversational, wait for number
+Q4: "Target sale price per unit?" → conversational, wait for number
+Q5: "Construction cost per sqm?" → buttons: [$3,500 - Budget] [$4,000 - Standard] [$4,500 - Premium] [Custom]
+Q6: "Target profit margin?" → buttons: [15%] [20%] [25%]
+
+After collecting all inputs, use calculate_quick_feasibility tool and present results.
+
+When presenting feasibility RESULTS, format like this:
+"Here's your quick feasibility summary:
+
+Revenue: $X.XM (X units @ $XXXk each)
+Total Costs: $X.XM
+Profit: $XXXk (XX% margin)
+
+The numbers [work/are tight/don't stack up] at this purchase price. [Insight about the deal]
+
+Residual land value at your XX% target margin is $XXXk, which is [above/below] the asking price by $XXXk.
+
+[One sentence recommendation]"
+
+RULE 5 - LENGTH:
+Keep responses to 150-250 words. Be concise.
 
 CONTENT:
-The user sees property data in a sidebar. Focus on insights and recommendations, not reciting facts. Sound like a knowledgeable friend giving advice.`;
+The user sees property data in a sidebar. Focus on insights and recommendations. Sound like a knowledgeable friend giving advice.`;
 
     // Build messages array with conversation history
     const messages = [];
@@ -267,6 +384,65 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
           if (sendProgress) sendProgress('⚠️ DA search encountered an issue');
         }
       }
+      
+      // Handle start feasibility tool
+      else if (toolUse.name === 'start_feasibility') {
+        console.log('[CLAUDE] Starting feasibility analysis');
+        if (sendProgress) sendProgress('📊 Preparing feasibility analysis...');
+        
+        const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
+        
+        // Build property data from tool input
+        const propertyData = {
+          property: {
+            address: toolUse.input.propertyAddress,
+            area: toolUse.input.siteArea ? `${toolUse.input.siteArea}sqm` : null,
+            density: toolUse.input.densityCode,
+            height: toolUse.input.heightLimit,
+            zone: toolUse.input.zone,
+          }
+        };
+        
+        const preFillData = getDetailedFeasibilityPreFill(propertyData);
+        
+        toolResult = {
+          success: true,
+          feasibilityMode: 'selection', // User needs to choose quick or detailed
+          propertyAddress: toolUse.input.propertyAddress,
+          preFill: preFillData.preFill || {},
+          constraints: preFillData.constraints || {},
+          message: 'Ready to run feasibility analysis'
+        };
+      }
+      
+      // Handle quick feasibility calculation
+      else if (toolUse.name === 'calculate_quick_feasibility') {
+        console.log('[CLAUDE] Calculating quick feasibility');
+        if (sendProgress) sendProgress('🔢 Crunching the numbers...');
+        
+        const { calculateQuickFeasibility } = await import('./feasibility-calculator.js');
+        
+        const feasResult = calculateQuickFeasibility({
+          address: toolUse.input.propertyAddress,
+          siteArea: toolUse.input.siteArea,
+          densityCode: toolUse.input.densityCode,
+          heightLimit: toolUse.input.heightLimit,
+          purchasePrice: toolUse.input.purchasePrice,
+          numUnits: toolUse.input.numUnits,
+          targetSalePricePerUnit: toolUse.input.targetSalePricePerUnit,
+          developmentType: toolUse.input.developmentType || 'apartments',
+          constructionCostPerSqm: toolUse.input.constructionCostPerSqm || 4000,
+          avgUnitSize: toolUse.input.avgUnitSize || 85,
+          targetMarginPercent: toolUse.input.targetMarginPercent || 20,
+        });
+        
+        if (sendProgress) sendProgress('✅ Feasibility calculated');
+        
+        toolResult = {
+          ...feasResult,
+          feasibilityMode: 'results'
+        };
+      }
 
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
@@ -296,12 +472,17 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
       // Extract text response
       const textContent = finalResponse.content.find(c => c.type === 'text');
       
+      // Determine what type of data to return
+      const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
+      
       return {
         answer: formatIntoParagraphs(stripMarkdown(textContent?.text)) || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
+        feasibilityData: isFeasibility ? toolResult : null,
         usedTool: true,
-        toolQuery: toolUse.input.query || toolUse.input.address
+        toolName: toolUse.name,
+        toolQuery: toolUse.input.query || toolUse.input.address || toolUse.input.propertyAddress
       };
     } else {
       // Claude answered without needing to scrape
