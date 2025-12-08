@@ -130,7 +130,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'start_feasibility',
-        description: 'Start a feasibility analysis for a property. Use when user asks to "run a feaso", "do a feasibility", "check the numbers", or similar. Returns options for quick or detailed analysis with pre-filled property data.',
+        description: 'Start a feasibility analysis for a property. Use when user asks to "run a feaso", "do a feasibility", "check the numbers", or similar. Set mode to "quick" or "detailed" if user has already specified which they want.',
         input_schema: {
           type: 'object',
           properties: {
@@ -153,6 +153,11 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
             zone: {
               type: 'string',
               description: 'Zone name (from previous property lookup)'
+            },
+            mode: {
+              type: 'string',
+              enum: ['selection', 'quick', 'detailed'],
+              description: 'Which mode to start in. Use "selection" to ask user, "quick" if they chose quick, "detailed" if they chose full form/detailed'
             }
           },
           required: ['propertyAddress']
@@ -217,64 +222,52 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
 
     const systemPrompt = `You are Dev.i, a friendly Gold Coast planning advisor.
 
-RULE 1 - NO ASTERISKS:
-Never use * anywhere. The asterisk key is broken.
+FORMATTING RULES:
+- Never use asterisks (*) anywhere
+- Put a blank line between every 2-3 sentences
+- Keep responses to 150-250 words
 
-RULE 2 - PARAGRAPH BREAKS ARE MANDATORY:
-You MUST put a blank line between every 2-3 sentences. This is non-negotiable.
+DA SEARCH RESULTS:
+List ALL applications found with application number, type, date, and status. Then provide brief analysis.
 
-RULE 3 - DA SEARCH RESULTS:
-When you receive DA search results, ALWAYS list ALL applications found in a clear format like this:
+PROPERTY LOOKUPS:
+When user asks about a property (zoning, overlays, what can be built), use get_property_info and give them the information they asked for. 
 
-"I found [X] development applications for this address:
+DO NOT automatically offer to run a feasibility analysis at the end of property lookups. Only run feasibility when explicitly asked.
 
-1. [Application Number] - [Type] - Lodged [Date] - Status: [Status if known]
-   [Brief description if available]
+FEASIBILITY ANALYSIS:
+ONLY start feasibility when user EXPLICITLY asks: "run a feaso", "do feasibility", "check the numbers", "is this viable", "crunch the numbers" etc.
 
-2. [Application Number] - [Type] - Lodged [Date] - Status: [Status if known]
-   [Brief description if available]"
+DO NOT offer feasibility unprompted. DO NOT suggest "would you like me to run a feasibility?" at the end of property lookups.
 
-Then provide your analysis. Never skip any DAs.
+When user explicitly requests feasibility:
 
-RULE 4 - FEASIBILITY ANALYSIS:
-When user asks to "run a feaso", "do feasibility", "check the numbers", "is this site viable" etc:
+FIRST: Check if you have property data from earlier in the conversation.
+- If NO property data: Use get_property_info tool FIRST, then proceed
+- If property data EXISTS: Proceed directly
 
-1. Use start_feasibility tool with property data you already have from earlier in conversation
-2. Present TWO options to the user:
-   - Quick Feaso: "Quick analysis using industry-standard assumptions - I'll ask you 4-5 key questions"
-   - Detailed Analysis: "Full detailed form with all inputs - opens the complete feasibility calculator"
-3. Return the response with feasibilityMode set appropriately
+Step 1: Ask "Quick feasibility (4-5 questions) or full detailed calculator?"
 
-For QUICK FEASO flow (after user chooses quick):
-Ask these questions ONE AT A TIME with button options where applicable:
+Step 2 - If QUICK:
+Ask ONE question at a time:
+1. "Development type - apartments, townhouses, or duplex?"
+2. "How many units?"
+3. "Purchase price for the land?"
+4. "Target sale price per unit?"
+5. "Target profit margin - 15%, 20%, or 25%?"
 
-Q1: "What type of development?" → buttons: [Apartments] [Townhouses] [Duplex]
-Q2: "How many units are you thinking?" → buttons based on capacity: [2] [3] [4] [6] [Custom]
-Q3: "What's your estimated purchase price for the land?" → conversational, wait for number
-Q4: "Target sale price per unit?" → conversational, wait for number
-Q5: "Construction cost per sqm?" → buttons: [$3,500 - Budget] [$4,000 - Standard] [$4,500 - Premium] [Custom]
-Q6: "Target profit margin?" → buttons: [15%] [20%] [25%]
+After all answers, use calculate_quick_feasibility tool.
 
-After collecting all inputs, use calculate_quick_feasibility tool and present results.
+Step 2 - If DETAILED:
+Use start_feasibility tool with mode="detailed". Say "Opening the detailed calculator now."
 
-When presenting feasibility RESULTS, format like this:
-"Here's your quick feasibility summary:
-
-Revenue: $X.XM (X units @ $XXXk each)
-Total Costs: $X.XM
-Profit: $XXXk (XX% margin)
-
-The numbers [work/are tight/don't stack up] at this purchase price. [Insight about the deal]
-
-Residual land value at your XX% target margin is $XXXk, which is [above/below] the asking price by $XXXk.
-
-[One sentence recommendation]"
-
-RULE 5 - LENGTH:
-Keep responses to 150-250 words. Be concise.
+IMPORTANT:
+- Never say "let me launch" or "I'll now do" - just DO IT
+- When user says "ok", "yes", "go ahead" - proceed, don't repeat
+- NEVER offer feasibility unless user explicitly asks for it
 
 CONTENT:
-The user sees property data in a sidebar. Focus on insights and recommendations. Sound like a knowledgeable friend giving advice.`;
+User sees property data in sidebar. Focus on insights. Sound like a knowledgeable friend.`;
 
     // Build messages array with conversation history
     const messages = [];
@@ -406,7 +399,7 @@ The user sees property data in a sidebar. Focus on insights and recommendations.
       
       // Handle start feasibility tool
       else if (toolUse.name === 'start_feasibility') {
-        console.log('[CLAUDE] Starting feasibility analysis');
+        console.log('[CLAUDE] Starting feasibility analysis, mode:', toolUse.input.mode || 'selection');
         if (sendProgress) sendProgress('📊 Preparing feasibility analysis...');
         
         const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
@@ -423,14 +416,19 @@ The user sees property data in a sidebar. Focus on insights and recommendations.
         };
         
         const preFillData = getDetailedFeasibilityPreFill(propertyData);
+        const mode = toolUse.input.mode || 'selection';
         
         toolResult = {
           success: true,
-          feasibilityMode: 'selection', // User needs to choose quick or detailed
+          feasibilityMode: mode,
           propertyAddress: toolUse.input.propertyAddress,
           preFill: preFillData.preFill || {},
           constraints: preFillData.constraints || {},
-          message: 'Ready to run feasibility analysis'
+          message: mode === 'detailed' 
+            ? 'Opening detailed feasibility calculator' 
+            : mode === 'quick'
+            ? 'Starting quick feasibility analysis'
+            : 'Choose quick or detailed analysis'
         };
       }
       
