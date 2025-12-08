@@ -34,6 +34,50 @@ function stripMarkdown(text) {
 }
 
 /**
+ * Force paragraph breaks every 2-3 sentences
+ * Because Claude keeps writing walls of text
+ */
+function formatIntoParagraphs(text) {
+  if (!text) return text;
+  
+  // First, normalize existing line breaks to spaces (to work with walls of text)
+  let normalized = text.replace(/\n+/g, ' ').replace(/  +/g, ' ').trim();
+  
+  // Split into sentences (handle common abbreviations)
+  const sentenceEnders = /(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e))\.\s+(?=[A-Z])/g;
+  const sentences = normalized.split(sentenceEnders);
+  
+  if (sentences.length <= 3) {
+    return text; // Short response, leave as-is
+  }
+  
+  // Group into paragraphs of 2-3 sentences
+  const paragraphs = [];
+  let currentParagraph = [];
+  
+  sentences.forEach((sentence, index) => {
+    // Add period back if it was removed during split
+    const cleanSentence = sentence.trim();
+    if (!cleanSentence) return;
+    
+    currentParagraph.push(cleanSentence.endsWith('.') ? cleanSentence : cleanSentence + '.');
+    
+    // Create paragraph break every 2-3 sentences
+    if (currentParagraph.length >= 2 && (currentParagraph.length >= 3 || index === sentences.length - 1)) {
+      paragraphs.push(currentParagraph.join(' '));
+      currentParagraph = [];
+    }
+  });
+  
+  // Don't forget remaining sentences
+  if (currentParagraph.length > 0) {
+    paragraphs.push(currentParagraph.join(' '));
+  }
+  
+  return paragraphs.join('\n\n');
+}
+
+/**
  * Get planning advisory from Claude with function calling
  * Claude will automatically call the scraper when needed
  */
@@ -232,7 +276,7 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
       const textContent = finalResponse.content.find(c => c.type === 'text');
       
       return {
-        answer: stripMarkdown(textContent?.text) || 'Unable to generate response',
+        answer: formatIntoParagraphs(stripMarkdown(textContent?.text)) || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         usedTool: true,
@@ -245,7 +289,7 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
       const textContent = response.content.find(c => c.type === 'text');
       
       return {
-        answer: stripMarkdown(textContent?.text) || 'Unable to generate response',
+        answer: formatIntoParagraphs(stripMarkdown(textContent?.text)) || 'Unable to generate response',
         propertyData: null,
         usedTool: false
       };
