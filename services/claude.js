@@ -279,17 +279,36 @@ The user sees property data in a sidebar. Focus on insights and recommendations.
     // Build messages array with conversation history
     const messages = [];
     
-    // Add conversation history if provided
+    // Add conversation history if provided, filtering out empty content
     if (conversationHistory && conversationHistory.length > 0) {
       console.log('[CLAUDE] Adding conversation history...');
       const recentHistory = conversationHistory.slice(-10);
-      messages.push(...recentHistory);
+      
+      // Filter out any messages with empty content
+      for (const msg of recentHistory) {
+        if (msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true)) {
+          // Ensure content is never empty
+          const content = typeof msg.content === 'string' 
+            ? msg.content.trim() 
+            : msg.content;
+          
+          if (content && (typeof content !== 'string' || content.length > 0)) {
+            messages.push({
+              role: msg.role,
+              content: content
+            });
+          }
+        }
+      }
+      
+      console.log('[CLAUDE] Filtered history:', messages.length, 'messages');
     }
     
-    // Add current user query
+    // Add current user query (ensure it's not empty)
+    const trimmedQuery = userQuery?.trim() || 'hello';
     messages.push({
       role: 'user',
-      content: userQuery
+      content: trimmedQuery
     });
 
     // Initial request to Claude
