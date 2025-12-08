@@ -266,9 +266,6 @@ The user sees property data in a sidebar. Focus on insights and recommendations,
           if (sendProgress) sendProgress('⚠️ DA search encountered an issue');
         }
       }
-        
-        toolResult = daResult;
-      }
 
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
