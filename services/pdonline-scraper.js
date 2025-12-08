@@ -44,7 +44,6 @@ export async function scrapeGoldCoastDAs(address, monthsBack = 12) {
     
     // Connect to BrowserBase
     console.log('[PDONLINE] Connecting to BrowserBase...');
-    console.log('[PDONLINE] Connection URL:', `wss://connect.browserbase.com?projectId=${browserbaseProjectId}`);
     
     try {
       browser = await chromium.connectOverCDP(
@@ -98,7 +97,7 @@ export async function scrapeGoldCoastDAs(address, monthsBack = 12) {
       return { success: true, count: 0, applications: [] };
     }
     
-    // Parse results
+    // Save the results URL for returning to it
     const resultsUrl = page.url();
     console.log('[PDONLINE] Results URL:', resultsUrl);
     
@@ -111,98 +110,113 @@ export async function scrapeGoldCoastDAs(address, monthsBack = 12) {
       return { success: true, count: 0, applications: [] };
     }
     
-    let rows;
-    try {
-      rows = await page.$$('table#gridResults tr.ContentPanel, table#gridResults tr.AlternateContentPanel');
-      console.log('[PDONLINE] Found', rows.length, 'result rows');
-    } catch (error) {
-      console.error('[PDONLINE] Failed to get rows:', error.message);
-      await browser.close();
-      return { success: true, count: 0, applications: [] };
-    }
-    
+    // FIRST PASS: Collect all basic data from the table WITHOUT clicking into details
+    const applications = [];
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - monthsBack);
     
-    const applications = [];
+    // Get all rows and extract basic info first
+    const rowsData = await page.$$eval(
+      'table#gridResults tr.ContentPanel, table#gridResults tr.AlternateContentPanel',
+      (rows) => {
+        return rows.map(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length < 5) return null;
+          
+          return {
+            appNumber: cells[0]?.innerText?.trim() || '',
+            dateStr: cells[1]?.innerText?.trim() || '',
+            location: cells[2]?.innerText?.trim() || '',
+            appType: cells[3]?.innerText?.trim() || '',
+            suburb: cells[4]?.innerText?.trim() || ''
+          };
+        }).filter(Boolean);
+      }
+    );
     
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      console.log(`[PDONLINE] Processing row ${i + 1}/${rows.length}`);
+    console.log('[PDONLINE] Found', rowsData.length, 'result rows');
+    
+    // Process each row's basic data
+    for (const rowData of rowsData) {
+      const [day, month, year] = rowData.dateStr.split('/');
+      const appDate = new Date(year, month - 1, day);
+      const withinRange = appDate >= cutoffDate;
+      
+      const app = {
+        application_number: rowData.appNumber,
+        lodgement_date: rowData.dateStr,
+        location: rowData.location,
+        application_type: rowData.appType,
+        suburb: rowData.suburb,
+        within_date_range: withinRange,
+        details_fetched: false
+      };
+      
+      console.log('[PDONLINE] Found:', app.application_number, '- Within range:', withinRange);
+      applications.push(app);
+    }
+    
+    // SECOND PASS: Fetch details for applications within date range
+    // We navigate fresh each time to avoid stale element issues
+    for (let i = 0; i < applications.length; i++) {
+      const app = applications[i];
+      
+      if (!app.within_date_range) {
+        console.log('[PDONLINE] Skipping details for', app.application_number, '(outside date range)');
+        continue;
+      }
       
       try {
-        const cells = await row.$$('td');
-        if (cells.length < 5) {
-          console.log('[PDONLINE] Row has insufficient cells, skipping');
+        console.log('[PDONLINE] Fetching details for', app.application_number);
+        
+        // Go back to results page fresh
+        await page.goto(resultsUrl, { timeout: 30000 });
+        await page.waitForLoadState('networkidle', { timeout: 30000 });
+        await page.waitForSelector('table#gridResults', { timeout: 10000 });
+        
+        // Find and click the link for this specific application
+        const link = await page.$(`a:has-text("${app.application_number}")`);
+        if (!link) {
+          console.log('[PDONLINE] Could not find link for', app.application_number);
           continue;
         }
         
-        const appNumber = await cells[0].innerText();
-        const dateStr = await cells[1].innerText();
-        const location = await cells[2].innerText();
-        const appType = await cells[3].innerText();
-        const suburb = await cells[4].innerText();
+        await link.click();
+        await page.waitForLoadState('networkidle', { timeout: 30000 });
         
-        const [day, month, year] = dateStr.trim().split('/');
-        const appDate = new Date(year, month - 1, day);
-        const withinRange = appDate >= cutoffDate;
-        
-        const app = {
-          application_number: appNumber.trim(),
-          lodgement_date: dateStr.trim(),
-          location: location.trim(),
-          application_type: appType.trim(),
-          suburb: suburb.trim(),
-          details_fetched: false
-        };
-        
-        console.log('[PDONLINE] Found:', app.application_number, '- Within range:', withinRange);
-        
-        // Fetch details for recent apps
-        if (withinRange) {
-          try {
-            if (page.url() !== resultsUrl) {
-              await page.goto(resultsUrl, { timeout: 30000 });
-              await page.waitForLoadState('networkidle', { timeout: 30000 });
-            }
-            
-            const link = await page.$(`a:has-text("${appNumber.trim()}")`);
-            if (link) {
-              await link.click();
-              await page.waitForLoadState('networkidle', { timeout: 30000 });
-              
-              if (!page.url().includes('Error.aspx')) {
-                await page.waitForSelector('fieldset legend:has-text("Details")', { timeout: 10000 });
-                const html = await page.content();
-                
-                // Extract description
-                const descMatch = html.match(/Application description<\/span><div class="AlternateContentText"[^>]*>([^<]+(?:<[^\/][^>]*>[^<]*<\/[^>]+>)*[^<]*)<\/div>/i);
-                if (descMatch) {
-                  app.application_description = descMatch[1].replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ');
-                }
-                
-                // Extract status
-                const statusMatch = html.match(/Status<\/span><div class="AlternateContentText"[^>]*>([^<]+(?:<[^\/][^>]*>[^<]*<\/[^>]+>)*[^<]*)<\/div>/i);
-                if (statusMatch) {
-                  app.status = statusMatch[1].replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ');
-                }
-                
-                app.details_fetched = true;
-                console.log('[PDONLINE] ✅ Fetched details for', app.application_number);
-              }
-              
-              await page.goBack();
-              await page.waitForLoadState('networkidle', { timeout: 30000 });
-            }
-          } catch (err) {
-            console.error('[PDONLINE] Error fetching details for', app.application_number, ':', err.message);
-          }
+        // Check we're on a detail page
+        if (page.url().includes('Error.aspx')) {
+          console.log('[PDONLINE] Error page for', app.application_number);
+          continue;
         }
         
-        applications.push(app);
-      } catch (rowError) {
-        console.error(`[PDONLINE] Error processing row ${i + 1}:`, rowError.message);
-        continue;
+        // Wait for details to load
+        try {
+          await page.waitForSelector('fieldset legend:has-text("Details")', { timeout: 10000 });
+        } catch (e) {
+          console.log('[PDONLINE] Details section not found for', app.application_number);
+          continue;
+        }
+        
+        const html = await page.content();
+        
+        // Extract description
+        const descMatch = html.match(/Application description<\/span><div class="AlternateContentText"[^>]*>([^<]+(?:<[^\/][^>]*>[^<]*<\/[^>]+>)*[^<]*)<\/div>/i);
+        if (descMatch) {
+          app.application_description = descMatch[1].replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ');
+        }
+        
+        // Extract status
+        const statusMatch = html.match(/Status<\/span><div class="AlternateContentText"[^>]*>([^<]+(?:<[^\/][^>]*>[^<]*<\/[^>]+>)*[^<]*)<\/div>/i);
+        if (statusMatch) {
+          app.status = statusMatch[1].replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ');
+        }
+        
+        app.details_fetched = true;
+        console.log('[PDONLINE] ✅ Fetched details for', app.application_number);
+        
+      } catch (err) {
+        console.error('[PDONLINE] Error fetching details for', app.application_number, ':', err.message);
       }
     }
     
