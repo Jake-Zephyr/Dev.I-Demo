@@ -348,6 +348,29 @@ User sees property data in sidebar. Focus on insights. Sound like a knowledgeabl
           };
         }
 
+        // Handle address not found
+        if (propertyData.addressNotFound) {
+          console.log('[CLAUDE] Address not found:', propertyData.searchedAddress);
+          
+          if (propertyData.suggestions && propertyData.suggestions.length > 0) {
+            const suggestionsList = propertyData.suggestions
+              .map((s, i) => `${i + 1}. ${s.address}`)
+              .join('\n');
+            
+            return {
+              answer: `I couldn't find "${propertyData.searchedAddress}" in the Gold Coast planning database.\n\nDid you mean one of these?\n\n${suggestionsList}\n\nOr you can try searching with a lot/plan number (like "12RP39932") for more accurate results.`,
+              usedTool: 'get_property_info',
+              propertyData: null
+            };
+          }
+          
+          return {
+            answer: `I couldn't find "${propertyData.searchedAddress}" in the Gold Coast planning database.\n\nSome tips:\n- Check the spelling of the street name\n- Include the suburb (e.g., "120 Marine Parade, Southport")\n- Try using a lot/plan number if you have one (e.g., "12RP39932")\n\nWould you like to try a different address?`,
+            usedTool: 'get_property_info',
+            propertyData: null
+          };
+        }
+
         console.log('[CLAUDE] Property data retrieved');
 
         // Search for relevant planning scheme information
