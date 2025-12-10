@@ -27,11 +27,6 @@ function extractStreetName(address) {
   // Normalize: lowercase, remove extra spaces
   const normalized = address.toLowerCase().trim();
   
-  // Common street types to help identify the street name
-  const streetTypes = ['street', 'st', 'road', 'rd', 'avenue', 'ave', 'parade', 'pde', 
-    'drive', 'dr', 'court', 'ct', 'place', 'pl', 'lane', 'ln', 'crescent', 'cres',
-    'boulevard', 'blvd', 'way', 'terrace', 'tce', 'circuit', 'cct', 'close', 'cl'];
-  
   // Remove unit numbers like "1/23" or "Unit 5"
   let cleaned = normalized.replace(/^(\d+\/\d+|\d+[a-z]?\/|unit\s*\d+,?\s*)/i, '');
   
@@ -39,7 +34,7 @@ function extractStreetName(address) {
   cleaned = cleaned.replace(/,?\s*(southport|surfers paradise|broadbeach|mermaid waters|palm beach|burleigh|gold coast|qld|queensland|\d{4}).*$/i, '');
   
   // Try to extract just the street name (without number)
-  const match = cleaned.match(/^\d+[a-z]?\s+(.+)/i);
+  const match = cleaned.match(/^\d+[a-z]?\-?\d*\s+(.+)/i);
   if (match) {
     return match[1].trim();
   }
@@ -48,39 +43,59 @@ function extractStreetName(address) {
 }
 
 /**
- * Check if two addresses likely refer to the same street
+ * Extract street number from an address
  */
-function addressesMatch(searchedAddress, returnedAddress) {
+function extractStreetNumber(address) {
+  if (!address) return '';
+  const match = address.match(/^(\d+[a-z]?)/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+/**
+ * Check if two addresses likely refer to the same property or nearby
+ * Returns: 'exact', 'same_street', 'different', or 'unknown'
+ */
+function compareAddresses(searchedAddress, returnedAddress) {
   const searchStreet = extractStreetName(searchedAddress);
   const returnStreet = extractStreetName(returnedAddress);
+  const searchNum = extractStreetNumber(searchedAddress);
+  const returnNum = extractStreetNumber(returnedAddress);
   
-  console.log(`[API] Comparing streets: searched="${searchStreet}" vs returned="${returnStreet}"`);
+  console.log(`[API] Comparing: "${searchStreet}" (#${searchNum}) vs "${returnStreet}" (#${returnNum})`);
   
-  if (!searchStreet || !returnStreet) return false;
+  if (!searchStreet || !returnStreet) return 'unknown';
   
-  // Exact match
-  if (searchStreet === returnStreet) return true;
-  
-  // Check if one contains the other (handles "marine parade" vs "marine pde")
+  // Check if streets match
   const searchWords = searchStreet.split(/\s+/).filter(w => w.length > 2);
   const returnWords = returnStreet.split(/\s+/).filter(w => w.length > 2);
   
-  // Get the main street name (first significant word, usually)
+  // Get main street name (first word)
   const searchMain = searchWords[0];
   const returnMain = returnWords[0];
   
-  // If the main street names match, consider it a match
-  if (searchMain && returnMain && searchMain === returnMain) {
-    return true;
+  // Streets are different
+  if (searchMain !== returnMain) {
+    // Check for partial match (in case of abbreviations)
+    const matchingWords = searchWords.filter(w => returnWords.includes(w));
+    if (matchingWords.length === 0) {
+      return 'different';
+    }
   }
   
-  // Check for partial match (at least 50% of words match)
-  const matchingWords = searchWords.filter(w => returnWords.includes(w));
-  if (matchingWords.length >= Math.min(searchWords.length, returnWords.length) * 0.5) {
-    return true;
+  // Same street - check if same number
+  if (searchNum && returnNum && searchNum === returnNum) {
+    return 'exact';
   }
   
-  return false;
+  return 'same_street';
+}
+
+/**
+ * Check if two addresses likely refer to the same street (legacy function for geocoder)
+ */
+function addressesMatch(searchedAddress, returnedAddress) {
+  const result = compareAddresses(searchedAddress, returnedAddress);
+  return result === 'exact' || result === 'same_street';
 }
 
 /**
@@ -208,7 +223,7 @@ export async function geocodeAddress(address) {
       f: 'json',
       SingleLine: address,
       outFields: '*',
-      maxLocations: 5  // Get multiple candidates for verification
+      maxLocations: 5
     });
     
     const response = await fetch(`${url}?${params}`);
@@ -216,14 +231,11 @@ export async function geocodeAddress(address) {
     
     if (data.candidates?.length > 0) {
       // Find the best matching candidate
-      const searchStreet = extractStreetName(address);
-      
       for (const candidate of data.candidates) {
         const candidateAddress = candidate.attributes?.Match_addr || candidate.address || '';
         
         console.log(`[API] Checking candidate: ${candidateAddress} (score: ${candidate.score})`);
         
-        // Check if this candidate matches the searched street
         if (addressesMatch(address, candidateAddress)) {
           const xMercator = candidate.location.x;
           const yMercator = candidate.location.y;
@@ -239,25 +251,22 @@ export async function geocodeAddress(address) {
         }
       }
       
-      // No matching street found - throw address not found
-      console.log(`[API] ⚠️ Geocoder returned results but none match "${searchStreet}"`);
+      // No matching street found
+      console.log(`[API] ⚠️ Geocoder returned results but none match the searched street`);
       
-      // Return suggestions if we have candidates
-      if (data.candidates.length > 0) {
-        const suggestions = data.candidates.slice(0, 3).map(c => {
-          const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [c.location.x, c.location.y]);
-          return {
-            address: c.attributes?.Match_addr || c.address,
-            lat,
-            lon
-          };
-        });
-        
-        const error = new Error('ADDRESS_NOT_FOUND');
-        error.searchedAddress = address;
-        error.suggestions = suggestions;
-        throw error;
-      }
+      const suggestions = data.candidates.slice(0, 3).map(c => {
+        const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [c.location.x, c.location.y]);
+        return {
+          address: c.attributes?.Match_addr || c.address,
+          lat,
+          lon
+        };
+      });
+      
+      const error = new Error('ADDRESS_NOT_FOUND');
+      error.searchedAddress = address;
+      error.suggestions = suggestions;
+      throw error;
     }
   } catch (error) {
     if (error.message === 'ADDRESS_NOT_FOUND' || error.message === 'DISAMBIGUATION_NEEDED') {
@@ -283,7 +292,6 @@ export async function geocodeAddress(address) {
     const data = await response.json();
     
     if (data.length > 0) {
-      // Check if any result matches
       for (const result of data) {
         if (addressesMatch(address, result.display_name)) {
           const lat = parseFloat(result.lat);
@@ -299,7 +307,6 @@ export async function geocodeAddress(address) {
         }
       }
       
-      // No match - provide suggestions
       console.log(`[API] ⚠️ Nominatim returned results but none match the searched street`);
       
       const suggestions = data.slice(0, 3).map(r => ({
@@ -329,6 +336,7 @@ export async function geocodeAddress(address) {
 
 /**
  * Get cadastre data by coordinates - returns geometry for overlay queries
+ * Now includes validation against original search address
  */
 async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
   console.log(`[API] Querying cadastre with geometry...`);
@@ -363,16 +371,6 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
     if (data.features?.[0]) {
       feature = data.features[0];
       console.log(`[API] ✓ Found lot: ${feature.attributes.LOTPLAN} (buffer: ${buffer}m)`);
-      
-      // Verify the cadastre result makes sense for the original search
-      const cadastreAddress = feature.attributes.LONG_ADDRESS || feature.attributes.HOUSE_ADDRESS || '';
-      
-      if (originalAddress && cadastreAddress) {
-        // If we have both addresses, verify they're on the same or nearby street
-        // Be lenient here since corner lots may have different addresses
-        console.log(`[API] Cadastre returned: ${cadastreAddress}`);
-      }
-      
       break;
     }
     
@@ -383,6 +381,29 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
   
   if (!feature) {
     throw new Error('Property not found in cadastre');
+  }
+  
+  // *** CRITICAL VALIDATION ***
+  // Check if the cadastre result matches the original search
+  const cadastreAddress = feature.attributes.LONG_ADDRESS || feature.attributes.HOUSE_ADDRESS || '';
+  
+  if (originalAddress && cadastreAddress) {
+    const comparison = compareAddresses(originalAddress, cadastreAddress);
+    console.log(`[API] Address validation: ${comparison}`);
+    
+    if (comparison === 'different') {
+      console.log(`[API] ⚠️ MISMATCH: Searched "${originalAddress}" but found "${cadastreAddress}"`);
+      
+      // Throw ADDRESS_NOT_FOUND with the wrong result as a "suggestion"
+      const error = new Error('ADDRESS_NOT_FOUND');
+      error.searchedAddress = originalAddress;
+      error.suggestions = [{
+        address: cadastreAddress,
+        lotplan: feature.attributes.LOTPLAN,
+        note: 'Nearby property found'
+      }];
+      throw error;
+    }
   }
   
   // Handle unit lookup if needed
@@ -564,6 +585,7 @@ export async function scrapeProperty(query, sendProgress = null) {
       matchedAddress = geocodeResult.matchedAddress;
       
       if (sendProgress) sendProgress('📋 Retrieving lot information...');
+      // Pass the original search address for validation
       feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, unitNumber, cleanAddress);
     }
     
@@ -596,7 +618,6 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     if (sendProgress) sendProgress(`✅ Property data retrieved in ${elapsed}s`);
     
-    // Use the cadastre address, but note if it differs from search
     const returnedAddress = cadastre.LONG_ADDRESS || cadastre.HOUSE_ADDRESS || query;
     
     return {
@@ -604,8 +625,8 @@ export async function scrapeProperty(query, sendProgress = null) {
       property: {
         lotplan: cadastre.LOTPLAN,
         address: returnedAddress,
-        searchedAddress: query,  // What user searched for
-        matchedAddress: matchedAddress,  // What geocoder matched to
+        searchedAddress: query,
+        matchedAddress: matchedAddress,
         zone: zone?.Zone || null,
         zoneCode: density,
         density: density,
@@ -619,7 +640,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.2-validated',
+      apiVersion: '2.3-validated',
       timeTaken: elapsed
     };
     
