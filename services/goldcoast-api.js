@@ -406,7 +406,7 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
       // Only look for parent if this lot number > 0
       // Lot 0 is typically the common property/parent in strata schemes
       if (lotNum > 0) {
-        console.log(`[API] Detected strata lot ${lotplan} (${lotArea}sqm), checking for parent parcel...`);
+        console.log(`[API] Detected strata unit lot ${lotplan} (${lotArea}sqm), checking for parent parcel...`);
         
         const parentLotPlan = `0${planPart}`;
         
@@ -428,9 +428,14 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
             
             console.log(`[API] Found parent ${parentLotPlan}: ${parentArea}sqm vs unit ${lotArea}sqm`);
             
-            // Use parent if it's significantly larger (at least 3x)
-            // This ensures we're getting the whole site, not just another unit
-            if (parentArea > lotArea * 3) {
+            // For BUP/GTP: ALWAYS use parent lot 0 as it represents the whole site
+            // This is important because lot 0 has the correct overlays/zoning for the entire complex
+            if (isBUP || isGTP) {
+              console.log(`[API] ✓ Using parent parcel ${parentLotPlan} (strata lot 0 = whole site)`);
+              feature = parentFeature;
+            }
+            // For small SP lots: only use parent if significantly larger
+            else if (parentArea > lotArea * 3) {
               console.log(`[API] ✓ Using parent parcel (${parentArea}sqm) instead of unit (${lotArea}sqm)`);
               feature = parentFeature;
             } else {
@@ -693,6 +698,20 @@ export async function scrapeProperty(query, sendProgress = null) {
     const returnedLotplan = cadastre.LOTPLAN || '';
     const isStrata = returnedLotplan.includes('BUP') || returnedLotplan.includes('GTP');
     
+    // Determine if this is the parent/common property or an individual unit
+    const lotNumMatch = returnedLotplan.match(/^(\d+)/);
+    const lotNumber = lotNumMatch ? parseInt(lotNumMatch[1]) : null;
+    const isParentLot = isStrata && lotNumber === 0;  // Lot 0 = parent/common property
+    const isUnitLot = isStrata && lotNumber > 0;      // Lot 1+ = individual units
+    
+    if (isStrata) {
+      if (isParentLot && numberOfUnits > 1) {
+        console.log(`[API] This is the PARENT SITE (lot 0) of a ${numberOfUnits}-unit strata scheme`);
+      } else if (isUnitLot) {
+        console.log(`[API] This is UNIT ${lotNumber} within a strata scheme`);
+      }
+    }
+    
     if (numberOfUnits > 1) {
       console.log(`[API] Strata title with ${numberOfUnits} units registered`);
     }
@@ -710,8 +729,17 @@ export async function scrapeProperty(query, sendProgress = null) {
         height: height?.['Height (m)'] || null,
         area: cadastre.AREA_SIZE_SQ_M ? `${Math.round(cadastre.AREA_SIZE_SQ_M)}sqm` : null,
         overlays: overlayNames,
-        numberOfUnits: numberOfUnits,  // How many units registered on this title
-        isStrata: isStrata             // Whether this is a strata scheme (BUP/GTP)
+        // Strata information
+        isStrata: isStrata,                    // Is this a strata scheme (BUP/GTP)?
+        isParentLot: isParentLot,              // Is this the parent site (lot 0)?
+        isUnitLot: isUnitLot,                  // Is this an individual unit?
+        numberOfUnits: numberOfUnits,          // How many units in this scheme
+        unitNumber: isUnitLot ? lotNumber : null,  // Which unit number (if unit lot)
+        strataNote: isParentLot && numberOfUnits > 1 
+          ? `This is the parent site containing ${numberOfUnits} strata units`
+          : isUnitLot 
+          ? `This is unit ${lotNumber} within a strata complex`
+          : null
       },
       planningContext: {
         zoneDescription: null,
@@ -719,7 +747,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.4-strata',
+      apiVersion: '2.5-strata-clarity',
       timeTaken: elapsed
     };
     
