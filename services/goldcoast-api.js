@@ -337,6 +337,7 @@ export async function geocodeAddress(address) {
 /**
  * Get cadastre data by coordinates - returns geometry for overlay queries
  * Now includes validation against original search address
+ * Also detects strata lots and tries to find parent parcel
  */
 async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
   console.log(`[API] Querying cadastre with geometry...`);
@@ -383,6 +384,67 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
     throw new Error('Property not found in cadastre');
   }
   
+  // *** CHECK IF THIS IS A STRATA/UNIT LOT AND FIND PARENT PARCEL ***
+  // Only do this if:
+  // 1. User didn't specifically ask for a unit (no unitNumber)
+  // 2. The lot is part of a BUP (Building Unit Plan) - these are strata titles
+  // 3. The lot area is suspiciously small (< 200sqm typically indicates a unit)
+  
+  const lotplan = feature.attributes.LOTPLAN || '';
+  const lotArea = feature.attributes.AREA_SIZE_SQ_M || 0;
+  const isBUP = lotplan.includes('BUP');  // Building Unit Plan = strata
+  const isSP = lotplan.includes('SP');    // Survey Plan - could be strata or normal
+  
+  if (!unitNumber && (isBUP || (isSP && lotArea < 150))) {
+    const lotMatch = lotplan.match(/^(\d+)([A-Z]{2,4}\d+)$/i);
+    
+    if (lotMatch) {
+      const lotNum = parseInt(lotMatch[1]);
+      const planPart = lotMatch[2];
+      
+      // Only look for parent if this lot number > 0
+      // Lot 0 is typically the common property/parent in strata schemes
+      if (lotNum > 0) {
+        console.log(`[API] Detected strata lot ${lotplan} (${lotArea}sqm), checking for parent parcel...`);
+        
+        const parentLotPlan = `0${planPart}`;
+        
+        const parentParams = new URLSearchParams({
+          f: 'json',
+          where: `upper(LOTPLAN) = upper('${parentLotPlan}')`,
+          outFields: '*',
+          outSR: '28356',
+          returnGeometry: 'true'
+        });
+        
+        try {
+          const parentResp = await fetch(`${url}?${parentParams}`);
+          const parentData = await parentResp.json();
+          
+          if (parentData.features?.[0]) {
+            const parentFeature = parentData.features[0];
+            const parentArea = parentFeature.attributes.AREA_SIZE_SQ_M || 0;
+            
+            console.log(`[API] Found parent ${parentLotPlan}: ${parentArea}sqm vs unit ${lotArea}sqm`);
+            
+            // Use parent if it's significantly larger (at least 3x)
+            // This ensures we're getting the whole site, not just another unit
+            if (parentArea > lotArea * 3) {
+              console.log(`[API] ✓ Using parent parcel (${parentArea}sqm) instead of unit (${lotArea}sqm)`);
+              feature = parentFeature;
+            } else {
+              console.log(`[API] Parent not significantly larger, keeping original lot`);
+            }
+          } else {
+            console.log(`[API] No parent parcel found at ${parentLotPlan}`);
+          }
+        } catch (e) {
+          console.log(`[API] Parent parcel lookup failed: ${e.message}`);
+        }
+      }
+    }
+  }
+  
   // *** CRITICAL VALIDATION ***
   // Check if the cadastre result matches the original search
   const cadastreAddress = feature.attributes.LONG_ADDRESS || feature.attributes.HOUSE_ADDRESS || '';
@@ -406,27 +468,32 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
     }
   }
   
-  // Handle unit lookup if needed
-  if (unitNumber && feature.attributes.NUMBEROFUNITS > 1) {
-    const specificLotPlan = feature.attributes.LOTPLAN.replace(/^\d+/, unitNumber);
-    console.log(`[API] Querying unit: ${specificLotPlan}...`);
+  // Handle EXPLICIT unit lookup (when user asks for "Unit 5" or "5/21 North St")
+  if (unitNumber) {
+    const currentLotplan = feature.attributes.LOTPLAN || '';
+    const planMatch = currentLotplan.match(/^\d+([A-Z]{2,4}\d+)$/i);
     
-    const params2 = new URLSearchParams({
-      f: 'json',
-      where: `upper(LOTPLAN) = upper('${specificLotPlan}')`,
-      outFields: '*',
-      outSR: '28356',
-      returnGeometry: 'true'
-    });
-    
-    const resp2 = await fetch(`${url}?${params2}`);
-    const data2 = await resp2.json();
-    
-    if (data2.features?.[0]) {
-      feature = data2.features[0];
-      console.log(`[API] ✓ Found unit ${unitNumber}: ${feature.attributes.AREA_SIZE_SQ_M}sqm`);
-    } else {
-      console.log(`[API] Unit ${unitNumber} not found, using parent lot`);
+    if (planMatch) {
+      const specificLotPlan = `${unitNumber}${planMatch[1]}`;
+      console.log(`[API] User requested unit ${unitNumber}, querying: ${specificLotPlan}...`);
+      
+      const params2 = new URLSearchParams({
+        f: 'json',
+        where: `upper(LOTPLAN) = upper('${specificLotPlan}')`,
+        outFields: '*',
+        outSR: '28356',
+        returnGeometry: 'true'
+      });
+      
+      const resp2 = await fetch(`${url}?${params2}`);
+      const data2 = await resp2.json();
+      
+      if (data2.features?.[0]) {
+        feature = data2.features[0];
+        console.log(`[API] ✓ Found unit ${unitNumber}: ${feature.attributes.AREA_SIZE_SQ_M}sqm`);
+      } else {
+        console.log(`[API] Unit ${unitNumber} not found, using current lot`);
+      }
     }
   }
   
