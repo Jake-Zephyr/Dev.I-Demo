@@ -387,15 +387,16 @@ async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
   // *** CHECK IF THIS IS A STRATA/UNIT LOT AND FIND PARENT PARCEL ***
   // Only do this if:
   // 1. User didn't specifically ask for a unit (no unitNumber)
-  // 2. The lot is part of a BUP (Building Unit Plan) - these are strata titles
-  // 3. The lot area is suspiciously small (< 200sqm typically indicates a unit)
+  // 2. The lot is part of a BUP (Building Unit Plan) or GTP (Group Titles Plan) - these are strata
+  // 3. Or it's an SP with suspiciously small area (<150sqm)
   
   const lotplan = feature.attributes.LOTPLAN || '';
   const lotArea = feature.attributes.AREA_SIZE_SQ_M || 0;
   const isBUP = lotplan.includes('BUP');  // Building Unit Plan = strata
+  const isGTP = lotplan.includes('GTP');  // Group Titles Plan = strata  
   const isSP = lotplan.includes('SP');    // Survey Plan - could be strata or normal
   
-  if (!unitNumber && (isBUP || (isSP && lotArea < 150))) {
+  if (!unitNumber && (isBUP || isGTP || (isSP && lotArea < 150))) {
     const lotMatch = lotplan.match(/^(\d+)([A-Z]{2,4}\d+)$/i);
     
     if (lotMatch) {
@@ -687,6 +688,15 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     const returnedAddress = cadastre.LONG_ADDRESS || cadastre.HOUSE_ADDRESS || query;
     
+    // Check if this is a strata title with units
+    const numberOfUnits = cadastre.NUMBEROFUNITS || null;
+    const returnedLotplan = cadastre.LOTPLAN || '';
+    const isStrata = returnedLotplan.includes('BUP') || returnedLotplan.includes('GTP');
+    
+    if (numberOfUnits > 1) {
+      console.log(`[API] Strata title with ${numberOfUnits} units registered`);
+    }
+    
     return {
       success: true,
       property: {
@@ -699,7 +709,9 @@ export async function scrapeProperty(query, sendProgress = null) {
         density: density,
         height: height?.['Height (m)'] || null,
         area: cadastre.AREA_SIZE_SQ_M ? `${Math.round(cadastre.AREA_SIZE_SQ_M)}sqm` : null,
-        overlays: overlayNames
+        overlays: overlayNames,
+        numberOfUnits: numberOfUnits,  // How many units registered on this title
+        isStrata: isStrata             // Whether this is a strata scheme (BUP/GTP)
       },
       planningContext: {
         zoneDescription: null,
@@ -707,7 +719,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.3-validated',
+      apiVersion: '2.4-strata',
       timeTaken: elapsed
     };
     
