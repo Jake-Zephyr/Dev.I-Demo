@@ -15,7 +15,7 @@ export const generateVisualization = async (data: VisualisationRequest) => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": "dev_sk_devi_x7k9m2p4n8q5w3e6r1t0"
+      "x-api-key": "_________________"
     },
     body: JSON.stringify(data)
   });
