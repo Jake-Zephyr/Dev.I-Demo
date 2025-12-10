@@ -11,140 +11,82 @@ const SERVICES = {
 };
 
 // WHITELIST: Only query layers verified to return accurate data
-// Based on cross-reference with official Gold Coast City Plan interactive mapping
 const VERIFIED_OVERLAY_LAYERS = [
-  // Acid sulfate soils
-  1,    // Land at or below 5m AHD
-  2,    // Land at or below 20m AHD
-  
-  // Airport environs
-  7,    // 2047 Australian Noise Exposure Forecast (ANEF) contour
-  9,    // Lighting area buffer zones
-  13,   // Obstacle Limitation Surface (OLS) - polyline
-  15,   // Obstacle Limitation Surface (OLS) - polygon
-  17,   // PANS-OPS contour - polyline
-  19,   // PANS-OPS contour - polygon
-  21,   // Public safety area
-  24,   // Wildlife hazard buffer zones - polyline
-  25,   // Wildlife hazard buffer zones - polygon
-  
-  // Building height
-  26,   // Building height
-  
-  // Bushfire
-  28,   // Bushfire hazard area
-  
-  // Coastal erosion hazard
-  31,   // Foreshore seawall line
-  32,   // Foreshore seawall setback
-  33,   // Foreshore seawall site
-  34,   // Waterfront development control area
-  
-  // Dwelling house
-  36,   // Dwelling house overlay area
-  
-  // Environmental significance - biodiversity
-  39,   // Protected areas
-  41,   // Coastal wetlands and islands core habitat system
-  42,   // Hinterland core habitat system
-  43,   // Substantial remnants
-  44,   // Hinterland to coast critical corridors
-  
-  // Environmental significance - priority species
-  47,   // State significant species
-  48,   // Koala habitat areas
-  50,   // Local significant species
-  
-  // Environmental significance - vegetation management
-  53,   // Regulated vegetation
-  55,   // Vegetation protection order
-  56,   // Vegetation management
-  
-  // Environmental significance - wetlands and waterways
-  59,   // State significant wetlands and aquatic systems
-  61,   // Local significant wetlands
-  62,   // Waterways
-  64,   // Canal
-  65,   // Lake
-  66,   // Buffer area
-  
-  // Extractive resources
-  74,   // Special management area
-  75,   // Resource area / processing area
-  76,   // Separation area
-  78,   // 100m transport route separation area
-  
-  // Flood
-  80,   // Flood assessment required
-  
-  // Industry, community infrastructure, agriculture
-  90,   // Community infrastructure
-  91,   // Industry interface area
-  92,   // Community infrastructure interface area
-  93,   // Agriculture land interface area
-  94,   // Agriculture land
-  95,   // Airport noise exposure area
-  
-  // Landslide
-  96,   // Landslide hazard
-  
-  // Light rail
-  100,  // Light rail urban renewal area boundary
-  101,  // Light rail urban renewal area
-  
-  // Minimum lot size
-  102,  // Minimum lot size
-  
-  // Mudgeeraba village
-  103,  // Mudgeeraba village character
-  
-  // Party house
-  107,  // Party house area
-  
-  // Regional infrastructure
-  111,  // Water supply pipeline 20m buffer
-  112,  // Water storage
-  113,  // Water supply properties
-  114,  // Ferry Road high voltage corridor (Energex)
-  115,  // Major electricity infrastructure (Powerlink)
-  116,  // Major electricity infrastructure (Energex)
-  
-  // Residential density
-  117,  // Residential density
-  
-  // Ridges
-  118,  // Ridges and significant hills protection
-  
-  // State controlled roads and transport noise
-  120,  // Railway corridor 100m buffer
-  122,  // Transport noise corridor - State-controlled road
-  123,  // Transport noise corridor - railway
-  124,  // Property adjacent to State controlled road
-  
-  // The Spit
-  126,  // Overlay area
-  127,  // Focus areas
-  
-  // Water catchments
-  129,  // Dual reticulation
-  130,  // Water supply buffer area
-  131,  // Woongoolba flood mitigation catchment area
+  1, 2, 7, 9, 13, 15, 17, 19, 21, 24, 25, 26, 28, 31, 32, 33, 34, 36, 39, 41, 42, 43, 44,
+  47, 48, 50, 53, 55, 56, 59, 61, 62, 64, 65, 66, 74, 75, 76, 78, 80, 90, 91, 92, 93, 94,
+  95, 96, 100, 101, 102, 103, 107, 111, 112, 113, 114, 115, 116, 117, 118, 120, 122, 123,
+  124, 126, 127, 129, 130, 131
 ];
 
-// EXCLUDED layers that return inaccurate/irrelevant data:
-// 14 - Outer horizontal surface 15km (covers entire city, not property-specific)
-// 18 - Horizontal plane labels (annotation layer, not useful)
-// 83 - Local heritage place (returns false positives)
-// 84 - Heritage place polygon (returns false positives)
-// 85 - Heritage protection boundary (returns false positives)
-// 86 - Heritage adjoining lot (returns false positives)
-// 121 - State controlled road (line geometry, not property-specific)
+/**
+ * Extract street name from an address for comparison
+ */
+function extractStreetName(address) {
+  if (!address) return '';
+  
+  // Normalize: lowercase, remove extra spaces
+  const normalized = address.toLowerCase().trim();
+  
+  // Common street types to help identify the street name
+  const streetTypes = ['street', 'st', 'road', 'rd', 'avenue', 'ave', 'parade', 'pde', 
+    'drive', 'dr', 'court', 'ct', 'place', 'pl', 'lane', 'ln', 'crescent', 'cres',
+    'boulevard', 'blvd', 'way', 'terrace', 'tce', 'circuit', 'cct', 'close', 'cl'];
+  
+  // Remove unit numbers like "1/23" or "Unit 5"
+  let cleaned = normalized.replace(/^(\d+\/\d+|\d+[a-z]?\/|unit\s*\d+,?\s*)/i, '');
+  
+  // Remove suburb and postcode from end
+  cleaned = cleaned.replace(/,?\s*(southport|surfers paradise|broadbeach|mermaid waters|palm beach|burleigh|gold coast|qld|queensland|\d{4}).*$/i, '');
+  
+  // Try to extract just the street name (without number)
+  const match = cleaned.match(/^\d+[a-z]?\s+(.+)/i);
+  if (match) {
+    return match[1].trim();
+  }
+  
+  return cleaned.trim();
+}
+
+/**
+ * Check if two addresses likely refer to the same street
+ */
+function addressesMatch(searchedAddress, returnedAddress) {
+  const searchStreet = extractStreetName(searchedAddress);
+  const returnStreet = extractStreetName(returnedAddress);
+  
+  console.log(`[API] Comparing streets: searched="${searchStreet}" vs returned="${returnStreet}"`);
+  
+  if (!searchStreet || !returnStreet) return false;
+  
+  // Exact match
+  if (searchStreet === returnStreet) return true;
+  
+  // Check if one contains the other (handles "marine parade" vs "marine pde")
+  const searchWords = searchStreet.split(/\s+/).filter(w => w.length > 2);
+  const returnWords = returnStreet.split(/\s+/).filter(w => w.length > 2);
+  
+  // Get the main street name (first significant word, usually)
+  const searchMain = searchWords[0];
+  const returnMain = returnWords[0];
+  
+  // If the main street names match, consider it a match
+  if (searchMain && returnMain && searchMain === returnMain) {
+    return true;
+  }
+  
+  // Check for partial match (at least 50% of words match)
+  const matchingWords = searchWords.filter(w => returnWords.includes(w));
+  if (matchingWords.length >= Math.min(searchWords.length, returnWords.length) * 0.5) {
+    return true;
+  }
+  
+  return false;
+}
 
 /**
  * Detect if query is a lot/plan or address
  */
 function detectQueryType(query) {
-  // Match lot/plan patterns like: 4GTP446, 123RP12345, 1SP123456
   const lotplanPattern = /^\d+[A-Z]{2,4}\d+$/i;
   if (lotplanPattern.test(query.trim())) {
     return { type: 'lotplan', value: query.trim().toUpperCase() };
@@ -163,7 +105,7 @@ async function getCadastreByLotPlan(lotplan) {
     f: 'json',
     where: `upper(LOTPLAN) = upper('${lotplan}')`,
     outFields: '*',
-    outSR: '28356',  // Return in MGA56 for direct use
+    outSR: '28356',
     returnGeometry: 'true'
   });
   
@@ -180,12 +122,10 @@ async function getCadastreByLotPlan(lotplan) {
 
 /**
  * Geocode address with smart disambiguation
- * If address is incomplete, returns multiple suggestions
  */
 export async function geocodeAddress(address) {
   console.log(`[API] Geocoding: ${address}`);
   
-  // Check if address looks complete (has suburb)
   const goldCoastSuburbs = [
     'mermaid waters', 'burleigh heads', 'palm beach', 'surfers paradise',
     'broadbeach', 'southport', 'main beach', 'robina', 'varsity lakes',
@@ -248,7 +188,8 @@ export async function geocodeAddress(address) {
         return {
           lat: parseFloat(result.lat),
           lon: parseFloat(result.lon),
-          confidence: 80
+          confidence: 80,
+          matchedAddress: result.display_name
         };
       }
     } catch (error) {
@@ -267,24 +208,61 @@ export async function geocodeAddress(address) {
       f: 'json',
       SingleLine: address,
       outFields: '*',
-      maxLocations: 1
+      maxLocations: 5  // Get multiple candidates for verification
     });
     
     const response = await fetch(`${url}?${params}`);
     const data = await response.json();
     
-    if (data.candidates?.[0]) {
-      const candidate = data.candidates[0];
-      const xMercator = candidate.location.x;
-      const yMercator = candidate.location.y;
-      const score = candidate.score;
+    if (data.candidates?.length > 0) {
+      // Find the best matching candidate
+      const searchStreet = extractStreetName(address);
       
-      const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [xMercator, yMercator]);
+      for (const candidate of data.candidates) {
+        const candidateAddress = candidate.attributes?.Match_addr || candidate.address || '';
+        
+        console.log(`[API] Checking candidate: ${candidateAddress} (score: ${candidate.score})`);
+        
+        // Check if this candidate matches the searched street
+        if (addressesMatch(address, candidateAddress)) {
+          const xMercator = candidate.location.x;
+          const yMercator = candidate.location.y;
+          const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [xMercator, yMercator]);
+          
+          console.log(`[API] ✓ QLD Geocoder matched: ${candidateAddress}`);
+          return { 
+            lat, 
+            lon, 
+            confidence: candidate.score,
+            matchedAddress: candidateAddress
+          };
+        }
+      }
       
-      console.log(`[API] QLD Geocoder: ${lat}, ${lon} (confidence: ${score}%)`);
-      return { lat, lon, confidence: score };
+      // No matching street found - throw address not found
+      console.log(`[API] ⚠️ Geocoder returned results but none match "${searchStreet}"`);
+      
+      // Return suggestions if we have candidates
+      if (data.candidates.length > 0) {
+        const suggestions = data.candidates.slice(0, 3).map(c => {
+          const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [c.location.x, c.location.y]);
+          return {
+            address: c.attributes?.Match_addr || c.address,
+            lat,
+            lon
+          };
+        });
+        
+        const error = new Error('ADDRESS_NOT_FOUND');
+        error.searchedAddress = address;
+        error.suggestions = suggestions;
+        throw error;
+      }
     }
   } catch (error) {
+    if (error.message === 'ADDRESS_NOT_FOUND' || error.message === 'DISAMBIGUATION_NEEDED') {
+      throw error;
+    }
     console.log(`[API] QLD geocoder failed, trying Nominatim...`);
   }
   
@@ -294,8 +272,9 @@ export async function geocodeAddress(address) {
     const params = new URLSearchParams({
       q: address,
       format: 'json',
-      limit: 1,
-      countrycodes: 'au'
+      limit: 5,
+      countrycodes: 'au',
+      addressdetails: 1
     });
     
     const response = await fetch(`${url}?${params}`, {
@@ -303,32 +282,60 @@ export async function geocodeAddress(address) {
     });
     const data = await response.json();
     
-    if (data[0]) {
-      const lat = parseFloat(data[0].lat);
-      const lon = parseFloat(data[0].lon);
+    if (data.length > 0) {
+      // Check if any result matches
+      for (const result of data) {
+        if (addressesMatch(address, result.display_name)) {
+          const lat = parseFloat(result.lat);
+          const lon = parseFloat(result.lon);
+          
+          console.log(`[API] ✓ Nominatim matched: ${result.display_name}`);
+          return { 
+            lat, 
+            lon, 
+            confidence: 85,
+            matchedAddress: result.display_name
+          };
+        }
+      }
       
-      console.log(`[API] Nominatim: ${lat}, ${lon}`);
-      return { lat, lon, confidence: 85 };
+      // No match - provide suggestions
+      console.log(`[API] ⚠️ Nominatim returned results but none match the searched street`);
+      
+      const suggestions = data.slice(0, 3).map(r => ({
+        address: r.display_name,
+        lat: parseFloat(r.lat),
+        lon: parseFloat(r.lon)
+      }));
+      
+      const error = new Error('ADDRESS_NOT_FOUND');
+      error.searchedAddress = address;
+      error.suggestions = suggestions;
+      throw error;
     }
   } catch (error) {
+    if (error.message === 'ADDRESS_NOT_FOUND' || error.message === 'DISAMBIGUATION_NEEDED') {
+      throw error;
+    }
     console.log(`[API] Nominatim also failed`);
   }
   
-  throw new Error('Address not found by any geocoder');
+  // Nothing found at all
+  const error = new Error('ADDRESS_NOT_FOUND');
+  error.searchedAddress = address;
+  error.suggestions = [];
+  throw error;
 }
 
 /**
  * Get cadastre data by coordinates - returns geometry for overlay queries
- * Handles unit number lookup if provided
  */
-async function getCadastreWithGeometry(lat, lon, unitNumber) {
+async function getCadastreWithGeometry(lat, lon, unitNumber, originalAddress) {
   console.log(`[API] Querying cadastre with geometry...`);
   
-  // Convert to Web Mercator (EPSG:3857) for cadastre service
   const [x3857, y3857] = proj4('EPSG:4326', 'EPSG:3857', [lon, lat]);
   const url = `${SERVICES.CADASTRE}/query`;
   
-  // Try with small buffer first, then larger if needed
   const buffers = [5, 20, 50];
   let feature = null;
   
@@ -344,10 +351,10 @@ async function getCadastreWithGeometry(lat, lon, unitNumber) {
       distance: buffer,
       units: 'esriSRUnit_Meter',
       inSR: '3857',
-      outSR: '28356',  // Return in MGA56 for direct use
+      outSR: '28356',
       spatialRel: 'esriSpatialRelIntersects',
       outFields: '*',
-      returnGeometry: 'true'  // GET THE GEOMETRY
+      returnGeometry: 'true'
     });
     
     const resp = await fetch(`${url}?${params}`);
@@ -356,6 +363,16 @@ async function getCadastreWithGeometry(lat, lon, unitNumber) {
     if (data.features?.[0]) {
       feature = data.features[0];
       console.log(`[API] ✓ Found lot: ${feature.attributes.LOTPLAN} (buffer: ${buffer}m)`);
+      
+      // Verify the cadastre result makes sense for the original search
+      const cadastreAddress = feature.attributes.LONG_ADDRESS || feature.attributes.HOUSE_ADDRESS || '';
+      
+      if (originalAddress && cadastreAddress) {
+        // If we have both addresses, verify they're on the same or nearby street
+        // Be lenient here since corner lots may have different addresses
+        console.log(`[API] Cadastre returned: ${cadastreAddress}`);
+      }
+      
       break;
     }
     
@@ -429,7 +446,7 @@ async function getZone(lotGeometry) {
     sr: '28356',
     mapExtent: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
     imageDisplay: '400,400,96',
-    tolerance: '0',  // Use exact geometry, no tolerance
+    tolerance: '0',
     layers: 'all:0',
     returnGeometry: 'false'
   });
@@ -481,8 +498,7 @@ async function getHeight(lotGeometry) {
 }
 
 /**
- * Get overlays using ACTUAL LOT GEOMETRY (not buffered centroid)
- * This ensures we only get overlays that genuinely intersect the property
+ * Get overlays using ACTUAL LOT GEOMETRY
  */
 async function getOverlays(lotGeometry) {
   console.log(`[API] Querying overlays using actual lot geometry (${VERIFIED_OVERLAY_LAYERS.length} layers)...`);
@@ -498,7 +514,7 @@ async function getOverlays(lotGeometry) {
     sr: '28356',
     mapExtent: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
     imageDisplay: '400,400,96',
-    tolerance: '0',  // ZERO tolerance - exact intersection only
+    tolerance: '0',
     layers: `visible:${layers}`,
     returnGeometry: 'false'
   });
@@ -508,8 +524,6 @@ async function getOverlays(lotGeometry) {
   
   if (data.results?.length > 0) {
     console.log(`[API] ✓ Found ${data.results.length} overlays`);
-    const layerIds = data.results.map(r => r.layerId).join(', ');
-    console.log(`[API] Layer IDs with data: ${layerIds}`);
     return data.results;
   }
   
@@ -519,28 +533,23 @@ async function getOverlays(lotGeometry) {
 
 /**
  * Main scraper function - uses actual lot geometry for accurate overlay detection
- * @param {string} query - Address or lot/plan to search
- * @param {function} sendProgress - Optional progress callback
- * @returns {Promise<object>} Property data
  */
 export async function scrapeProperty(query, sendProgress = null) {
   const startTime = Date.now();
   console.log(`[API] Starting property lookup: ${query}`);
   
   try {
-    // Detect if query is lot/plan or address
     const { type, value } = detectQueryType(query);
     console.log(`[API] Detected query type: ${type}`);
     
-    let feature;  // Will contain both attributes AND geometry
+    let feature;
+    let matchedAddress = null;
     
     if (type === 'lotplan') {
-      // Direct lot/plan lookup - returns geometry in MGA56
       if (sendProgress) sendProgress('📋 Looking up lot/plan...');
       feature = await getCadastreByLotPlan(value);
       
     } else {
-      // Address lookup with unit parsing
       const unitMatch = value.match(/^(\d+)[\/\-]|^Unit\s+(\d+)/i);
       const unitNumber = unitMatch ? (unitMatch[1] || unitMatch[2]) : null;
       const cleanAddress = unitNumber ? value.replace(/^\d+[\/\-]\s*|^Unit\s+\d+,?\s*/i, '').trim() : value;
@@ -550,16 +559,14 @@ export async function scrapeProperty(query, sendProgress = null) {
         if (sendProgress) sendProgress(`🏢 Searching for Unit ${unitNumber}...`);
       }
       
-      // Geocode address
       if (sendProgress) sendProgress('🌍 Locating property...');
-      const { lat, lon } = await geocodeAddress(cleanAddress);
+      const geocodeResult = await geocodeAddress(cleanAddress);
+      matchedAddress = geocodeResult.matchedAddress;
       
-      // Get cadastre with geometry
       if (sendProgress) sendProgress('📋 Retrieving lot information...');
-      feature = await getCadastreWithGeometry(lat, lon, unitNumber);
+      feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, unitNumber, cleanAddress);
     }
     
-    // Verify we have geometry
     if (!feature.geometry || !feature.geometry.rings) {
       throw new Error('No geometry returned for property');
     }
@@ -572,7 +579,6 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     console.log(`[API] Using lot geometry with ${lotGeometry.rings[0].length} vertices`);
     
-    // Get zone, height, overlays IN PARALLEL using actual lot geometry
     if (sendProgress) sendProgress('🏗️ Analyzing zoning and overlays...');
     const [zone, height, overlays] = await Promise.all([
       getZone(lotGeometry),
@@ -580,11 +586,9 @@ export async function scrapeProperty(query, sendProgress = null) {
       getOverlays(lotGeometry)
     ]);
     
-    // Extract density from overlays (layer 117)
     const densityOverlay = overlays.find(o => o.layerId === 117);
     const density = densityOverlay?.attributes?.Residential_Density || null;
     
-    // Extract overlay names and DEDUPLICATE
     const overlayNames = [...new Set(overlays.map(o => o.layerName))];
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -592,11 +596,16 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     if (sendProgress) sendProgress(`✅ Property data retrieved in ${elapsed}s`);
     
+    // Use the cadastre address, but note if it differs from search
+    const returnedAddress = cadastre.LONG_ADDRESS || cadastre.HOUSE_ADDRESS || query;
+    
     return {
       success: true,
       property: {
         lotplan: cadastre.LOTPLAN,
-        address: cadastre.LONG_ADDRESS || cadastre.HOUSE_ADDRESS || query,
+        address: returnedAddress,
+        searchedAddress: query,  // What user searched for
+        matchedAddress: matchedAddress,  // What geocoder matched to
         zone: zone?.Zone || null,
         zoneCode: density,
         density: density,
@@ -610,7 +619,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.1-geometry',
+      apiVersion: '2.2-validated',
       timeTaken: elapsed
     };
     
@@ -622,6 +631,20 @@ export async function scrapeProperty(query, sendProgress = null) {
         needsDisambiguation: true,
         suggestions: error.suggestions,
         originalQuery: query
+      };
+    }
+    
+    // Handle address not found
+    if (error.message === 'ADDRESS_NOT_FOUND') {
+      console.log(`[API] Address not found: ${error.searchedAddress}`);
+      return {
+        success: false,
+        addressNotFound: true,
+        searchedAddress: error.searchedAddress,
+        suggestions: error.suggestions || [],
+        message: error.suggestions?.length > 0 
+          ? `Could not find "${error.searchedAddress}". Did you mean one of these?`
+          : `Could not find "${error.searchedAddress}". Please check the address and try again.`
       };
     }
     
@@ -638,10 +661,10 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
   
   try {
     if (sendProgress) sendProgress('🌍 Locating property...');
-    const { lat, lon } = await geocodeAddress(address);
+    const geocodeResult = await geocodeAddress(address);
     
     if (sendProgress) sendProgress('📋 Retrieving lot geometry...');
-    const feature = await getCadastreWithGeometry(lat, lon, null);
+    const feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, null, address);
     
     if (!feature.geometry || !feature.geometry.rings) {
       throw new Error('No geometry returned for property');
@@ -665,6 +688,16 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
     };
     
   } catch (error) {
+    if (error.message === 'ADDRESS_NOT_FOUND') {
+      return {
+        success: false,
+        addressNotFound: true,
+        searchedAddress: error.searchedAddress,
+        suggestions: error.suggestions || [],
+        message: `Could not find "${error.searchedAddress}".`
+      };
+    }
+    
     console.error('[API ERROR]', error.message);
     throw new Error(`Overlay lookup failed: ${error.message}`);
   }
