@@ -67,7 +67,6 @@ function formatIntoParagraphs(text) {
 
 /**
  * Extract context from conversation history
- * Pulls out property data, suburb, development strategy etc
  */
 function extractConversationContext(conversationHistory) {
   const context = {
@@ -78,7 +77,7 @@ function extractConversationContext(conversationHistory) {
     lastDensity: null,
     lastHeight: null,
     lastZone: null,
-    developmentStrategy: null, // 'renovation', 'new_build', 'subdivision', etc
+    developmentStrategy: null,
     existingUnits: null,
     isStrata: false,
     priceDiscussed: null,
@@ -89,19 +88,16 @@ function extractConversationContext(conversationHistory) {
     return context;
   }
   
-  // Scan through history looking for property data and strategy signals
   for (const msg of conversationHistory) {
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
     const contentLower = content.toLowerCase();
     
-    // Look for property addresses
     const addressMatch = content.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln)),?\s*([\w\s]+?)(?:,|\s+QLD|\s+\d{4}|$)/i);
     if (addressMatch) {
       context.lastProperty = addressMatch[0].trim();
       context.lastSuburb = addressMatch[2]?.trim();
     }
     
-    // Look for suburbs mentioned
     const suburbPatterns = [
       'mermaid waters', 'mermaid beach', 'broadbeach', 'surfers paradise',
       'southport', 'main beach', 'palm beach', 'burleigh', 'robina',
@@ -114,31 +110,26 @@ function extractConversationContext(conversationHistory) {
       }
     }
     
-    // Look for lotplan
     const lotplanMatch = content.match(/\b(\d+[A-Z]{2,4}\d+)\b/i);
     if (lotplanMatch) {
       context.lastLotplan = lotplanMatch[1].toUpperCase();
     }
     
-    // Look for site area
     const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
     if (areaMatch) {
       context.lastSiteArea = parseInt(areaMatch[1]);
     }
     
-    // Look for density codes
     const densityMatch = content.match(/\b(RD[1-8])\b/i);
     if (densityMatch) {
       context.lastDensity = densityMatch[1].toUpperCase();
     }
     
-    // Look for height
     const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
     if (heightMatch) {
       context.lastHeight = `${heightMatch[1]}m`;
     }
     
-    // Detect development strategy from conversation
     if (contentLower.includes('renovate') || contentLower.includes('renovation') || contentLower.includes('update')) {
       context.developmentStrategy = 'renovation';
     }
@@ -149,28 +140,24 @@ function extractConversationContext(conversationHistory) {
       context.developmentStrategy = 'subdivision';
     }
     
-    // Detect existing units
     const unitsMatch = content.match(/(\d+)\s*(?:existing\s*)?units?|already\s*(?:has\s*)?(\d+)\s*units?|strata.*?(\d+)\s*units?/i);
     if (unitsMatch) {
       context.existingUnits = parseInt(unitsMatch[1] || unitsMatch[2] || unitsMatch[3]);
     }
     
-    // Look for "4 units" or "subdivided into X units"
     const strataUnitsMatch = content.match(/(?:subdivided|split|divided)\s*into\s*(\d+)\s*(?:strata\s*)?units?/i);
     if (strataUnitsMatch) {
       context.existingUnits = parseInt(strataUnitsMatch[1]);
       context.isStrata = true;
     }
     
-    // Detect strata
     if (contentLower.includes('strata') || contentLower.includes('body corp')) {
       context.isStrata = true;
     }
     
-    // Look for budget/price discussions
     const priceMatch = content.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:m(?:illion)?|k)?/gi);
     if (priceMatch) {
-      context.priceDiscussed = priceMatch[priceMatch.length - 1]; // Most recent price
+      context.priceDiscussed = priceMatch[priceMatch.length - 1];
     }
   }
   
@@ -222,7 +209,6 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
     console.log('=====================================');
 
-    // Extract context from conversation history
     const conversationContext = extractConversationContext(conversationHistory);
     console.log('[CLAUDE] Extracted context:', JSON.stringify(conversationContext, null, 2));
 
@@ -293,7 +279,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
             developmentType: {
               type: 'string',
               enum: ['renovation', 'new_build', 'subdivision', 'unknown'],
-              description: 'Type of development based on conversation context. Use "renovation" if discussing updating existing buildings, "new_build" for knockdown/rebuild, "subdivision" for land splitting.'
+              description: 'Type of development based on conversation context.'
             },
             existingUnits: {
               type: 'number',
@@ -306,7 +292,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
             mode: {
               type: 'string',
               enum: ['selection', 'quick', 'detailed'],
-              description: 'Which mode to start in. ALWAYS use "selection" first to ask user preference. Only use "quick" or "detailed" if user has EXPLICITLY said which they want.'
+              description: 'Which mode to start in. ALWAYS use "selection" first to ask user preference.'
             }
           },
           required: ['propertyAddress', 'mode']
@@ -314,7 +300,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'ask_clarification',
-        description: 'Use when user gives an ambiguous response like "yes", "ok", "sure" to a question that requires a specific choice. Also use when user provides figures that seem unrealistic and need verification.',
+        description: 'Use when user gives an ambiguous response like "yes", "ok", "sure" to a question that requires a specific choice.',
         input_schema: {
           type: 'object',
           properties: {
@@ -344,104 +330,104 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
           required: ['originalQuestion', 'clarificationType']
         }
       },
-      const updatedCalculateQuickFeasibilityTool = {
-  name: 'calculate_quick_feasibility',
-  description: 'Calculate quick feasibility. ONLY use after collecting ALL required inputs from user through the conversation flow. Never assume construction costs - they must be provided by user.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      propertyAddress: {
-        type: 'string',
-        description: 'Property address'
-      },
-      siteArea: {
-        type: 'number',
-        description: 'Site area in sqm'
-      },
-      saleableArea: {
-        type: 'number',
-        description: 'Total saleable area (NSA) in sqm'
-      },
-      gfa: {
-        type: 'number',
-        description: 'Gross floor area in sqm (calculated from efficiency if not provided directly)'
-      },
-      numUnits: {
-        type: 'number',
-        description: 'Number of units'
-      },
-      unitMix: {
-        type: 'string',
-        description: 'Description of unit mix (e.g., "6 x 3-bed + 2 x 4-bed penthouse")'
-      },
-      totalBedrooms: {
-        type: 'number',
-        description: 'Total bedroom count'
-      },
-      grv: {
-        type: 'number',
-        description: 'Gross realisation value (total sales revenue including GST)'
-      },
-      landValue: {
-        type: 'number',
-        description: 'Land/purchase price'
-      },
-      constructionCost: {
-        type: 'number',
-        description: 'Total construction cost including professional fees and statutory fees (as provided by user)'
-      },
-      contingencyIncluded: {
-        type: 'boolean',
-        description: 'Whether contingency is included in construction cost'
-      },
-      lvr: {
-        type: 'number',
-        description: 'Loan to value ratio as percentage (70 = 70%). Use 100 for fully funded.'
-      },
-      interestRate: {
-        type: 'number',
-        description: 'Interest rate as percentage (7.5 = 7.5%)'
-      },
-      sellingCostsPercent: {
-        type: 'number',
-        description: 'Selling costs as percentage (4 = 4%)'
-      },
-      timelineMonths: {
-        type: 'number',
-        description: 'Total project timeline in months'
-      },
-      gstScheme: {
-        type: 'string',
-        enum: ['margin', 'fully_taxed'],
-        description: 'GST scheme - margin or fully_taxed'
-      },
-      gstCostBase: {
-        type: 'number',
-        description: 'GST cost base (required if margin scheme)'
-      },
-      targetMarginPercent: {
-        type: 'number',
-        description: 'Target profit margin percentage (default 20)'
+      {
+        name: 'calculate_quick_feasibility',
+        description: 'Calculate quick feasibility. ONLY use after collecting ALL required inputs from user through the conversation flow. Never assume construction costs - they must be provided by user.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            propertyAddress: {
+              type: 'string',
+              description: 'Property address'
+            },
+            siteArea: {
+              type: 'number',
+              description: 'Site area in sqm'
+            },
+            saleableArea: {
+              type: 'number',
+              description: 'Total saleable area (NSA) in sqm'
+            },
+            gfa: {
+              type: 'number',
+              description: 'Gross floor area in sqm (calculated from efficiency if not provided directly)'
+            },
+            numUnits: {
+              type: 'number',
+              description: 'Number of units'
+            },
+            unitMix: {
+              type: 'string',
+              description: 'Description of unit mix (e.g., "6 x 3-bed + 2 x 4-bed penthouse")'
+            },
+            totalBedrooms: {
+              type: 'number',
+              description: 'Total bedroom count'
+            },
+            grv: {
+              type: 'number',
+              description: 'Gross realisation value (total sales revenue including GST)'
+            },
+            landValue: {
+              type: 'number',
+              description: 'Land/purchase price'
+            },
+            constructionCost: {
+              type: 'number',
+              description: 'Total construction cost including professional fees and statutory fees (as provided by user)'
+            },
+            contingencyIncluded: {
+              type: 'boolean',
+              description: 'Whether contingency is included in construction cost'
+            },
+            lvr: {
+              type: 'number',
+              description: 'Loan to value ratio as percentage (70 = 70%). Use 100 for fully funded.'
+            },
+            interestRate: {
+              type: 'number',
+              description: 'Interest rate as percentage (7.5 = 7.5%)'
+            },
+            sellingCostsPercent: {
+              type: 'number',
+              description: 'Selling costs as percentage (4 = 4%)'
+            },
+            timelineMonths: {
+              type: 'number',
+              description: 'Total project timeline in months'
+            },
+            gstScheme: {
+              type: 'string',
+              enum: ['margin', 'fully_taxed'],
+              description: 'GST scheme - margin or fully_taxed'
+            },
+            gstCostBase: {
+              type: 'number',
+              description: 'GST cost base (required if margin scheme)'
+            },
+            targetMarginPercent: {
+              type: 'number',
+              description: 'Target profit margin percentage (default 20)'
+            }
+          },
+          required: [
+            'propertyAddress',
+            'saleableArea',
+            'numUnits',
+            'grv',
+            'landValue',
+            'constructionCost',
+            'contingencyIncluded',
+            'lvr',
+            'interestRate',
+            'sellingCostsPercent',
+            'timelineMonths',
+            'gstScheme'
+          ]
+        }
       }
-    },
-    required: [
-      'propertyAddress',
-      'saleableArea',
-      'numUnits',
-      'grv',
-      'landValue',
-      'constructionCost',
-      'contingencyIncluded',
-      'lvr',
-      'interestRate',
-      'sellingCostsPercent',
-      'timelineMonths',
-      'gstScheme'
-    ]
-  }
-};
+    ];
 
-    // Build context-aware system prompt
     const contextSummary = buildContextSummary(conversationContext);
     
     const systemPrompt = `You are Dev.i, a friendly Gold Coast property development advisor.
@@ -551,7 +537,7 @@ If user says No, note that 5% will be added.
 
 STEP 7 - EFFICIENCY CHECK:
 If user gave $/sqm for construction and you only have NSA, ask:
-"What's the building efficiency (NSA/Common Areas? Or what's the GFA?"
+"What's the building efficiency (NSA/Common Areas)? Or what's the GFA?"
 
 Show buttons: [50%] [55%] [60%] [65%] [70%] [Custom...]
 
@@ -622,7 +608,7 @@ Residual land value at 20% margin: $[X] — [you paid $X over/under]"
 Show buttons: [Adjust Inputs] [Export PDF]
 
 CRITICAL QUICK FEASO RULES:
-1. NEVER just assume construction costs - always ask. Only assume if they say they don't know. 
+1. NEVER just assume construction costs - always ask. Only assume if they say they don't know.
 2. NEVER question prices for premium locations (Hedges Ave, Jefferson Lane, Main Beach, Noosa)
 3. If user corrects planning parameters, accept without verification
 4. Keep responses SHORT - data and one question only, no commentary
@@ -631,7 +617,6 @@ CRITICAL QUICK FEASO RULES:
 7. Trust the user - they know their project
 8. Each message should have ONE question maximum
 9. Use buttons wherever possible to speed up input
-`;
 
 INPUT VALIDATION:
 - If user gives a sale price that seems very off (e.g., $3M for a standard unit), gently check - but accept if they confirm
@@ -652,7 +637,6 @@ ${contextSummary}
 
 DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
-    // Build messages array with conversation history
     const messages = [];
     
     if (conversationHistory && conversationHistory.length > 0) {
@@ -767,19 +751,16 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
         };
       }
       
-      // Handle DA search tool - WITH CONTEXT AWARENESS
+      // Handle DA search tool
       else if (toolUse.name === 'search_development_applications') {
         if (sendProgress) sendProgress('🔍 Searching development applications...');
         
-        // Build full address using context if suburb missing
         let searchAddress = toolUse.input.address;
         const inputSuburb = toolUse.input.suburb;
         
-        // Check if address already has suburb
         const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami)/i.test(searchAddress);
         
         if (!hasSuburb) {
-          // Try to add suburb from input or context
           const suburb = inputSuburb || conversationContext.lastSuburb;
           if (suburb) {
             searchAddress = `${searchAddress}, ${suburb}`;
@@ -847,7 +828,6 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
         
         const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
         
-        // Use context to fill in missing data
         const propertyData = {
           property: {
             address: toolUse.input.propertyAddress || conversationContext.lastProperty,
@@ -861,7 +841,6 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
         const preFillData = getDetailedFeasibilityPreFill(propertyData);
         const mode = toolUse.input.mode || 'selection';
         
-        // Include development context
         const developmentType = toolUse.input.developmentType || conversationContext.developmentStrategy || 'unknown';
         const existingUnits = toolUse.input.existingUnits || conversationContext.existingUnits;
         const isStrata = toolUse.input.isStrata || conversationContext.isStrata;
@@ -887,134 +866,132 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
       }
       
       // Handle quick feasibility calculation
-     const handleCalculateQuickFeasibility = async (toolUse, sendProgress, conversationContext) => {
-  console.log('[CLAUDE] Calculating quick feasibility with user-provided inputs');
-  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
-  const input = toolUse.input;
-  
-  // Add contingency if not included
-  const constructionWithContingency = input.contingencyIncluded 
-    ? input.constructionCost 
-    : input.constructionCost * 1.05;
-  
-  // Convert percentages to decimals
-  const lvrDecimal = input.lvr / 100;
-  const interestDecimal = input.interestRate / 100;
-  const sellingDecimal = input.sellingCostsPercent / 100;
-  
-  // Calculate GST
-  let grvExclGST, gstPayable;
-  if (input.gstScheme === 'margin' && input.gstCostBase) {
-    const margin = input.grv - input.gstCostBase;
-    gstPayable = margin / 11;
-    grvExclGST = input.grv - gstPayable;
-  } else if (input.gstScheme === 'fully_taxed') {
-    grvExclGST = input.grv / 1.1;
-    gstPayable = input.grv - grvExclGST;
-  } else {
-    // Margin scheme without cost base - GST on full amount
-    grvExclGST = input.grv / 1.1;
-    gstPayable = input.grv - grvExclGST;
-  }
-  
-  // Selling costs (on GST-exclusive revenue)
-  const sellingCosts = grvExclGST * sellingDecimal;
-  
-  // Finance costs
-  // Total debt based on LVR
-  const totalDebt = (input.landValue + constructionWithContingency) * lvrDecimal;
-  // Assume 50% average debt outstanding over project life (drawdown profile)
-  const avgDebtOutstanding = totalDebt * 0.5;
-  const financeCosts = avgDebtOutstanding * interestDecimal * (input.timelineMonths / 12);
-  
-  // Total project cost
-  const totalCost = input.landValue + constructionWithContingency + sellingCosts + financeCosts;
-  
-  // Profit and margin
-  const grossProfit = grvExclGST - totalCost;
-  const profitMargin = (grossProfit / grvExclGST) * 100;
-  
-  // Residual land value at target margin
-  const targetMargin = (input.targetMarginPercent || 20) / 100;
-  const targetProfit = grvExclGST * targetMargin;
-  const residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - financeCosts - targetProfit;
-  
-  // Determine viability
-  let viability;
-  if (profitMargin >= 25) viability = 'viable';
-  else if (profitMargin >= 20) viability = 'marginal';
-  else if (profitMargin >= 15) viability = 'challenging';
-  else viability = 'not_viable';
-  
-  if (sendProgress) sendProgress('✅ Feasibility calculated');
-  
-  return {
-    success: true,
-    feasibilityMode: 'results',
-    
-    inputs: {
-      address: input.propertyAddress,
-      siteArea: input.siteArea,
-      saleableArea: input.saleableArea,
-      gfa: input.gfa,
-      numUnits: input.numUnits,
-      unitMix: input.unitMix,
-      purchasePrice: input.landValue,
-      targetSalePricePerUnit: input.grv / input.numUnits
-    },
-    
-    revenue: {
-      grvInclGST: input.grv,
-      grvExclGST: Math.round(grvExclGST),
-      gstPayable: Math.round(gstPayable),
-      avgPricePerUnit: Math.round(input.grv / input.numUnits)
-    },
-    
-    costs: {
-      landValue: input.landValue,
-      constructionTotal: Math.round(constructionWithContingency),
-      sellingCosts: Math.round(sellingCosts),
-      financeCosts: Math.round(financeCosts),
-      totalProjectCost: Math.round(totalCost)
-    },
-    
-    profitability: {
-      grossProfit: Math.round(grossProfit),
-      profitMargin: Math.round(profitMargin * 10) / 10,
-      targetMargin: input.targetMarginPercent || 20,
-      meetsTarget: profitMargin >= (input.targetMarginPercent || 20),
-      viability
-    },
-    
-    residual: {
-      residualLandValue: Math.round(residualLandValue),
-      residualPerSqm: input.siteArea ? Math.round(residualLandValue / input.siteArea) : null,
-      vsActualLand: Math.round(residualLandValue - input.landValue),
-      landIsFairValue: residualLandValue >= input.landValue
-    },
-    
-    financeInputs: {
-      lvr: input.lvr,
-      interestRate: input.interestRate,
-      sellingCostsPercent: input.sellingCostsPercent,
-      timelineMonths: input.timelineMonths,
-      gstScheme: input.gstScheme,
-      gstCostBase: input.gstCostBase
-    },
-    
-    assumptions: {
-      financeDrawProfile: '50% average outstanding',
-      stampDuty: 'Excluded',
-      holdingCosts: 'Excluded (rates, land tax, insurance)',
-      contingency: input.contingencyIncluded ? 'Included in construction' : 'Added 5%'
-    },
-    
-    timeline: {
-      totalMonths: input.timelineMonths
-    }
-  };
-};
+      else if (toolUse.name === 'calculate_quick_feasibility') {
+        console.log('[CLAUDE] Calculating quick feasibility with user-provided inputs');
+        if (sendProgress) sendProgress('🔢 Crunching the numbers...');
+        
+        const input = toolUse.input;
+        
+        // Add contingency if not included
+        const constructionWithContingency = input.contingencyIncluded 
+          ? input.constructionCost 
+          : input.constructionCost * 1.05;
+        
+        // Convert percentages to decimals
+        const lvrDecimal = input.lvr / 100;
+        const interestDecimal = input.interestRate / 100;
+        const sellingDecimal = input.sellingCostsPercent / 100;
+        
+        // Calculate GST
+        let grvExclGST, gstPayable;
+        if (input.gstScheme === 'margin' && input.gstCostBase) {
+          const margin = input.grv - input.gstCostBase;
+          gstPayable = margin / 11;
+          grvExclGST = input.grv - gstPayable;
+        } else if (input.gstScheme === 'fully_taxed') {
+          grvExclGST = input.grv / 1.1;
+          gstPayable = input.grv - grvExclGST;
+        } else {
+          // Margin scheme without cost base - GST on full amount
+          grvExclGST = input.grv / 1.1;
+          gstPayable = input.grv - grvExclGST;
+        }
+        
+        // Selling costs (on GST-exclusive revenue)
+        const sellingCosts = grvExclGST * sellingDecimal;
+        
+        // Finance costs
+        const totalDebt = (input.landValue + constructionWithContingency) * lvrDecimal;
+        const avgDebtOutstanding = totalDebt * 0.5;
+        const financeCosts = avgDebtOutstanding * interestDecimal * (input.timelineMonths / 12);
+        
+        // Total project cost
+        const totalCost = input.landValue + constructionWithContingency + sellingCosts + financeCosts;
+        
+        // Profit and margin
+        const grossProfit = grvExclGST - totalCost;
+        const profitMargin = (grossProfit / grvExclGST) * 100;
+        
+        // Residual land value at target margin
+        const targetMargin = (input.targetMarginPercent || 20) / 100;
+        const targetProfit = grvExclGST * targetMargin;
+        const residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - financeCosts - targetProfit;
+        
+        // Determine viability
+        let viability;
+        if (profitMargin >= 25) viability = 'viable';
+        else if (profitMargin >= 20) viability = 'marginal';
+        else if (profitMargin >= 15) viability = 'challenging';
+        else viability = 'not_viable';
+        
+        if (sendProgress) sendProgress('✅ Feasibility calculated');
+        
+        toolResult = {
+          success: true,
+          feasibilityMode: 'results',
+          
+          inputs: {
+            address: input.propertyAddress,
+            siteArea: input.siteArea,
+            saleableArea: input.saleableArea,
+            gfa: input.gfa,
+            numUnits: input.numUnits,
+            unitMix: input.unitMix,
+            purchasePrice: input.landValue,
+            targetSalePricePerUnit: input.grv / input.numUnits
+          },
+          
+          revenue: {
+            grvInclGST: input.grv,
+            grvExclGST: Math.round(grvExclGST),
+            gstPayable: Math.round(gstPayable),
+            avgPricePerUnit: Math.round(input.grv / input.numUnits)
+          },
+          
+          costs: {
+            landValue: input.landValue,
+            constructionTotal: Math.round(constructionWithContingency),
+            sellingCosts: Math.round(sellingCosts),
+            financeCosts: Math.round(financeCosts),
+            totalProjectCost: Math.round(totalCost)
+          },
+          
+          profitability: {
+            grossProfit: Math.round(grossProfit),
+            profitMargin: Math.round(profitMargin * 10) / 10,
+            targetMargin: input.targetMarginPercent || 20,
+            meetsTarget: profitMargin >= (input.targetMarginPercent || 20),
+            viability
+          },
+          
+          residual: {
+            residualLandValue: Math.round(residualLandValue),
+            residualPerSqm: input.siteArea ? Math.round(residualLandValue / input.siteArea) : null,
+            vsActualLand: Math.round(residualLandValue - input.landValue),
+            landIsFairValue: residualLandValue >= input.landValue
+          },
+          
+          financeInputs: {
+            lvr: input.lvr,
+            interestRate: input.interestRate,
+            sellingCostsPercent: input.sellingCostsPercent,
+            timelineMonths: input.timelineMonths,
+            gstScheme: input.gstScheme,
+            gstCostBase: input.gstCostBase
+          },
+          
+          assumptions: {
+            financeDrawProfile: '50% average outstanding',
+            stampDuty: 'Excluded',
+            holdingCosts: 'Excluded (rates, land tax, insurance)',
+            contingency: input.contingencyIncluded ? 'Included in construction' : 'Added 5%'
+          },
+          
+          timeline: {
+            totalMonths: input.timelineMonths
+          }
+        };
+      }
 
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
