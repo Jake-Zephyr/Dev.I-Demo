@@ -534,14 +534,16 @@ CRITICAL RULES FOR QUICK FEASO:
 - Accept variations: "18 months" = "18mo" = "18m"
 - If user says "margin" for GST, that means margin scheme
 
-DO NOT offer feasibility unprompted. Only when explicitly asked.`;
+${contextSummary}
 
+DO NOT offer feasibility unprompted. Only when explicitly asked.`;
+    
     // Build messages array with conversation history
     const messages = [];
     
     if (conversationHistory && conversationHistory.length > 0) {
       console.log('[CLAUDE] Adding conversation history...');
-      const recentHistory = conversationHistory.slice(-10);
+      const recentHistory = conversationHistory.slice(-20);
       
       for (const msg of recentHistory) {
         if (msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true)) {
