@@ -424,7 +424,8 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     },
     required: ['numUnits', 'saleableArea', 'grvTotal', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
   }
-},
+}
+    ];
 
     // Build context-aware system prompt
     const contextSummary = buildContextSummary(conversationContext);
