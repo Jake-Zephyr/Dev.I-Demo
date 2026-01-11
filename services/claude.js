@@ -210,7 +210,138 @@ function buildContextSummary(context) {
   
   return parts.length > 0 ? `\n\nCONVERSATION CONTEXT:\n${parts.join('\n')}` : '';
 }
+/**
+ * Quick intent classification - no LLM needed for obvious cases
+ * Returns: 'conversational' | 'property' | 'analysis' | 'needs_context' | 'unclear'
+ */
+function classifyIntent(query, conversationContext) {
+  const q = query.toLowerCase().trim();
+  
+  // Conversational patterns - NO TOOLS NEEDED
+  const conversationalPatterns = [
+    /^(hi|hey|hello|g'day|yo)\b/,
+    /^how are you/,
+    /^are you (ok|okay|good|feeling)/,
+    /^what('s| is) up/,
+    /^thanks?( you)?$/,
+    /^(good|great|nice|cool|awesome|perfect)$/,
+    /^(yes|no|yeah|nah|yep|nope)$/,
+    /^what can you do/,
+    /^who are you/,
+    /^help$/,
+    /^lol/,
+    /^haha/,
+  ];
+  
+  if (conversationalPatterns.some(p => p.test(q))) {
+    return 'conversational';
+  }
+  
+  // Property patterns - TOOLS LIKELY NEEDED
+  const hasAddress = /\d+\s+\w+\s+(street|st|avenue|ave|road|rd|drive|dr|parade|pde|court|crt|crescent|cres|place|pl|way|lane|ln)/i.test(query);
+  const hasLotplan = /\d+[A-Z]{2,4}\d+/i.test(query);
+  const hasPropertyKeywords = /(zoning|zone|overlay|height|density|what can i build|development potential|RD\d)/i.test(q);
+  
+  if (hasAddress || hasLotplan) {
+    return 'property';
+  }
+  
+  // Explicit analysis requests
+  const analysisPatterns = [
+    /run (a )?feaso/i,
+    /feasibility/i,
+    /check (the )?(overlays|das|applications)/i,
+    /nearby (das|development applications)/i,
+    /what('s| is) the zoning/i,
+    /search for das/i,
+  ];
+  
+  if (analysisPatterns.some(p => p.test(q))) {
+    // Only proceed if we have property context
+    if (conversationContext.lastProperty || conversationContext.lastLotplan) {
+      return 'analysis';
+    }
+    return 'needs_context';
+  }
+  
+  // Property question with existing context
+  if (hasPropertyKeywords && (conversationContext.lastProperty || conversationContext.lastLotplan)) {
+    return 'property';
+  }
+  
+  // Default: let Claude decide with tools available
+  return 'unclear';
+}
+/**
+ * Handle conversational messages WITHOUT tools
+ * Fast, cheap, no scraping
+ */
+async function handleConversationalMessage(userQuery, conversationHistory, context) {
+  const messages = [];
+  
+  // Add recent history (last 10 messages max for context)
+  if (conversationHistory?.length > 0) {
+    const recent = conversationHistory.slice(-10);
+    for (const msg of recent) {
+      if (msg.content) {
+        messages.push({
+          role: msg.role,
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      }
+    }
+  }
+  
+  messages.push({ role: 'user', content: userQuery });
+  
+  const contextNote = context.lastProperty 
+    ? `\n\nContext: You've been discussing ${context.lastProperty}${context.lastSuburb ? ` in ${context.lastSuburb}` : ''}.` 
+    : '';
+  
+  const systemPrompt = `You are Dev.i, a friendly Gold Coast property development advisor.
 
+RIGHT NOW you're just having a casual chat - no property analysis needed.${contextNote}
+
+RULES FOR THIS RESPONSE:
+- Keep it short and friendly (1-3 sentences max)
+- Sound like a sharp mate, not a robot or a report
+- If they seem ready to work, invite them to drop an address
+- Never say "I don't have access to" or apologise for limitations
+- Never use bullet points, asterisks, or markdown formatting
+- Never offer to do things you can't do
+
+Examples of good responses:
+- "how are you" → "Good — ready when you are. Got a site in mind?"
+- "thanks" → "No worries. Shout if you need anything else."
+- "what can you do" → "I pull zoning, overlays, nearby DAs, and run quick feasos for Gold Coast sites. Drop an address when you're ready."
+- "hello" → "Hey! What site are we looking at today?"`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 150,
+      system: systemPrompt,
+      messages
+    });
+    
+    const text = response.content.find(c => c.type === 'text')?.text || "Ready when you are.";
+    
+    return {
+      answer: stripMarkdown(text),
+      propertyData: null,
+      usedTool: false,
+      isConversational: true
+    };
+    
+  } catch (error) {
+    console.error('[CLAUDE] Conversational error:', error.message);
+    return {
+      answer: "Ready when you are — drop an address and I'll take a look.",
+      propertyData: null,
+      usedTool: false
+    };
+  }
+}
 /**
  * Get planning advisory from Claude with function calling
  */
@@ -225,6 +356,30 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // Extract context from conversation history
     const conversationContext = extractConversationContext(conversationHistory);
     console.log('[CLAUDE] Extracted context:', JSON.stringify(conversationContext, null, 2));
+
+    // NEW: Classify intent BEFORE calling Claude with tools
+    const intent = classifyIntent(userQuery, conversationContext);
+    console.log('[CLAUDE] Intent classification:', intent);
+    
+    // CONVERSATIONAL: Respond without tools (fast path)
+    if (intent === 'conversational') {
+      console.log('[CLAUDE] Conversational message - skipping tools');
+      return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
+    }
+    
+    // NEEDS CONTEXT: Ask for property info before proceeding
+    if (intent === 'needs_context') {
+      console.log('[CLAUDE] Needs property context - asking user');
+      return {
+        answer: "I can help with that — I just need a property address or lot/plan number first. What site are you looking at?",
+        propertyData: null,
+        usedTool: false,
+        needsPropertyContext: true
+      };
+    }
+    
+    // PROPERTY, ANALYSIS, or UNCLEAR: Proceed with tools
+    console.log('[CLAUDE] Proceeding with tool-enabled response');
 
     const tools = [
       {
@@ -430,7 +585,14 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // Build context-aware system prompt
     const contextSummary = buildContextSummary(conversationContext);
     
-    const systemPrompt = `You are Dev.i, a friendly Gold Coast property development advisor.
+const systemPrompt = `You are Dev.i, a friendly Gold Coast property development advisor.
+
+TOOL USAGE RULES (CRITICAL):
+- ONLY use tools when the user is asking about a SPECIFIC PROPERTY with an address or lot/plan
+- NEVER use get_property_info or search_development_applications for greetings or general chat
+- NEVER use tools just to "check" something without a clear property target
+- If user refers to "the property" or "this site" but no address is in context, ASK for the address - don't guess or search randomly
+- If you're unsure whether to use a tool, DON'T - just respond conversationally
 
 CRITICAL RULES - FIGURES AND DATA:
 - NEVER invent or estimate market prices, rental yields, growth rates, or suburb statistics
