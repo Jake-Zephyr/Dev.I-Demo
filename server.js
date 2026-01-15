@@ -699,6 +699,100 @@ app.post('/api/address-autocomplete', apiKeyAuthMiddleware, async (req, res) => 
     res.json({ success: true, predictions: [] });
   }
 });
+
+// ===== CHAT TITLE GENERATION =====
+app.post('/api/generate-chat-title', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { firstMessage, claudeResponse } = req.body;
+
+    console.log('[CHAT-TITLE] Request received');
+    console.log('[CHAT-TITLE] First message:', firstMessage);
+
+    if (!firstMessage || typeof firstMessage !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'firstMessage is required and must be a string'
+      });
+    }
+
+    const message = firstMessage.toLowerCase();
+
+    // Pattern matching for property identifiers
+    const addressMatch = firstMessage.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|road|rd|drive|dr|parade|pde|court|ct|crescent|cres|place|pl|terrace|tce|boulevard|bvd|highway|hwy|lane|ln|way|walk))/i);
+    const lotplanMatch = firstMessage.match(/\b(\d+[A-Z]{2,4}\d+)\b/i);
+    const suburbMatch = firstMessage.match(/\b(mermaid|broadbeach|surfers|southport|burleigh|palm beach|robina|varsity|currumbin|coolangatta|labrador|runaway bay|hope island|coomera|ormeau|oxenford|helensvale|miami|nobby beach|main beach|clear island|ashmore|benowa|bundall|chevron island|elanora|merrimac|molendinar|mudgeeraba|nerang|paradise point|parkwood|reedy creek|tallebudgera|worongary|carrara|biggera waters|coombabah|gilston|gaven|highland park|hollywell|jacobs well|maudsland|monterey keys|pacific pines|pimpama|stapylton|upper coomera|willow vale|wongawallan|arundel|bonogin|natural bridge|advancetown|cedar creek)\b/i);
+
+    // Intent keywords (ordered by specificity - most specific first)
+    const intentPatterns = {
+      'Development Applications': /development application|DA|planning approval|permit|approval|consent/i,
+      'Stamp Duty': /stamp duty|tax|transfer duty|duty/i,
+      'Height': /height|storeys|stories|floors|tall|how tall|building height/i,
+      'Overlays': /overlay|overlays|restriction|constraint|heritage|environmental|flood/i,
+      'Density': /density|RD\d|how many|units|dwellings|bedrooms/i,
+      'Feasibility': /feasibility|feaso|numbers|viable|profit|cost|roi|return/i,
+      'Zoning': /zone|zoning|what can i build|can i build|planning rules|land use|permitted/i,
+      'Property Info': /information|info|details|data|tell me about/i
+    };
+
+    // Find matching intent
+    let intent = null;
+    for (const [key, pattern] of Object.entries(intentPatterns)) {
+      if (pattern.test(message)) {
+        intent = key;
+        break;
+      }
+    }
+
+    // Generate title based on priority
+    let title = '';
+
+    // Priority 1: Address + Intent
+    if (addressMatch && intent) {
+      const address = addressMatch[1];
+      // Shorten address if too long (keep number + first word of street)
+      const shortAddress = address.match(/(\d+\s+\w+)/)?.[1] || address.substring(0, 20);
+      title = `${shortAddress} ${intent}`;
+    }
+    // Priority 2: Lot/Plan + Intent
+    else if (lotplanMatch && intent) {
+      title = `${lotplanMatch[1]} ${intent}`;
+    }
+    // Priority 3: Suburb + Intent
+    else if (suburbMatch && intent) {
+      const suburb = suburbMatch[1].charAt(0).toUpperCase() + suburbMatch[1].slice(1).toLowerCase();
+      title = `${suburb} ${intent}`;
+    }
+    // Priority 4: Intent only
+    else if (intent) {
+      title = `${intent} Query`;
+    }
+    // Fallback: First 40 characters of message
+    else {
+      title = firstMessage.substring(0, 40);
+      if (firstMessage.length > 40) {
+        title += '...';
+      }
+      // Capitalize first letter
+      title = title.charAt(0).toUpperCase() + title.slice(1);
+    }
+
+    console.log('[CHAT-TITLE] Generated title:', title);
+
+    res.json({
+      success: true,
+      title: title,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[CHAT-TITLE ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
@@ -714,8 +808,9 @@ app.listen(PORT, () => {
   console.log(`   POST /api/calculate-stamp-duty  💰`);
   console.log(`   GET  /api/stamp-duty/states  💰`);
   console.log(`   POST /api/nearby-das  📍`);
-  console.log(`   POST /api/pdonline-das  🏗️ NEW`);
+  console.log(`   POST /api/pdonline-das  🏗️`);
   console.log(`   POST /api/generate-visualization  🎨`);
+  console.log(`   POST /api/generate-chat-title  💬 NEW`);
 });
 
 export default app;
