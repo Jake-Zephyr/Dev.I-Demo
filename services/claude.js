@@ -663,23 +663,20 @@ OVERLAY PRESENTATION:
 When user asks about overlays or constraints, present them in clean dot-point format:
 
 Planning Overlays for [address] (Lot [lotplan]):
-
-• Overlay Category Name 1
-  - Specific overlay 1
-  - Specific overlay 2
-
-• Overlay Category Name 2
-  - Specific overlay
+• [Overlay name 1]
+• [Overlay name 2]
+• [Overlay name 3]
 
 Key Implications:
-• Brief point about what each overlay category means
-• Focus on development impacts
-• Keep explanations concise (one line each)
+• [Brief one-line impact of overlay 1]
+• [Brief one-line impact of overlay 2]
+• [Brief one-line impact of overlay 3]
 
-- Group related overlays together (flood, aviation, environmental, etc.)
-- Use bullet points (•) for main categories
-- Use sub-bullets (-) for specific overlays within categories
-- Keep it scannable and easy to read
+Rules:
+- Simple bullet list, no grouping or sub-categories
+- Each overlay gets one bullet point
+- Keep implications concise (one line each)
+- Don't add category headings
 
 HANDLING AMBIGUOUS RESPONSES:
 - If user says "yes", "ok", "sure" to a question with multiple options, use ask_clarification tool
