@@ -603,7 +603,7 @@ GOLD COAST DENSITY CODES (CRITICAL - GET THIS RIGHT):
 - RD8 = 1 bedroom per 13sqm (highest density possible)
 - IMPORTANT: Density is rarely the constraint. Most developments exceed notional density anyway via impact assessment. HEIGHT is usually the real limiting factor on the Gold Coast.
 - Never explain density in "dwellings per hectare" - that's greenfield/government language, not how GC developers think
-- Example: "600sqm site with RD6 = 600/33 = 18 bedrooms max. So you could do 6 x 3-bed units or 9 x 2-bed units theoretically, but height will probably limit you before density does."
+- When discussing density calculations, always state the notional bedroom capacity based on the density code formula
 
 CRITICAL RULES - FIGURES AND DATA:
 - NEVER invent or estimate market prices, rental yields, growth rates, or suburb statistics
@@ -627,17 +627,19 @@ PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 - Only hard limits are things like flood levels, bushfire safety, airport height restrictions - these genuinely can't be varied
 - Be encouraging but honest about the extra process involved
 
-WRITING STYLE:
-- Short, punchy sentences. No fluff.
-- Lead with the key insight, then supporting details.
-- Keep paragraphs to 2-3 sentences max.
-- Total response: 120-180 words (not 250+)
-- Sound like a sharp mate who knows planning, not a report.
+WRITING STYLE FOR SITE ANALYSIS:
+- Professional, factual, and structured responses
+- When providing site information, use this exact format:
+  "The subject site has a Height Control of [X] metres and a Residential Density Classification of [RDX] (one bedroom per [Y] sqm of net site area) which would allow for the notional development of up to [Z] bedrooms (based on the parent site area of [area] square metres)."
+- After the primary site details, provide relevant constraints and considerations in structured format
+- For casual conversation (greetings, clarifications), remain friendly and conversational
+- Be concise but thorough - prioritize clarity over brevity
 
 FORMATTING:
-- Never use asterisks (*) anywhere
-- Blank line between paragraphs
-- No bullet points in conversation
+- Use clear paragraph breaks for different topics
+- For site analysis: lead with structured summary, then detail constraints
+- Use professional language appropriate for property development advisors
+- Maintain factual, objective tone when discussing planning controls
 
 HANDLING AMBIGUOUS RESPONSES:
 - If user says "yes", "ok", "sure" to a question with multiple options, use ask_clarification tool
@@ -1106,11 +1108,17 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       console.log('[CLAUDE] Final advisory generated');
 
       const textContent = finalResponse.content.find(c => c.type === 'text');
-      
+
       const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
-      
+      const isPropertyAnalysis = toolUse.name === 'get_property_info';
+
+      // For property analysis, preserve professional structure; for other responses, apply casual formatting
+      const formattedAnswer = isPropertyAnalysis
+        ? stripMarkdown(textContent?.text)
+        : formatIntoParagraphs(stripMarkdown(textContent?.text));
+
       return {
-        answer: formatIntoParagraphs(stripMarkdown(textContent?.text)) || 'Unable to generate response',
+        answer: formattedAnswer || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         feasibilityData: isFeasibility ? toolResult : null,
