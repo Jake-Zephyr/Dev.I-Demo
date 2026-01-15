@@ -629,11 +629,24 @@ PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 
 WRITING STYLE FOR SITE ANALYSIS:
 - Professional, factual, and structured responses
+- ALWAYS include the lot/plan reference in the first sentence for verification
 - When providing site information, use this exact format:
-  "The subject site has a Height Control of [X] metres and a Residential Density Classification of [RDX] (one bedroom per [Y] sqm of net site area) which would allow for the notional development of up to [Z] bedrooms (based on the parent site area of [area] square metres)."
+  "The subject site at [address] (Lot [lotplan]) has a Height Control of [X] metres and a Residential Density Classification of [RDX] (one bedroom per [Y] sqm of net site area) which would allow for the notional development of up to [Z] bedrooms (based on the parent site area of [area] square metres)."
 - After the primary site details, provide relevant constraints and considerations in structured format
 - For casual conversation (greetings, clarifications), remain friendly and conversational
 - Be concise but thorough - prioritize clarity over brevity
+
+MULTIPLE PROPERTIES AT SAME ADDRESS:
+- When the tool returns multiple properties (needsDisambiguation: true), present them clearly:
+  "I found [X] properties at this address:
+
+  Option A: Lot [lotplan] - [area] sqm ([description])
+  Option B: Lot [lotplan] - [area] sqm ([description])
+
+  Which property are you interested in?"
+- Wait for user to select before proceeding with analysis
+- When user responds with "Option A", "A", or a lot/plan number, call get_property_info again with that specific lot/plan
+- Example: User says "Option B" → call get_property_info with query="0SP326641" (the lot/plan from Option B)
 
 FORMATTING:
 - Use clear paragraph breaks for different topics
@@ -774,11 +787,27 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
         if (propertyData.needsDisambiguation) {
           console.log('[CLAUDE] Disambiguation needed, asking user...');
-          
+
+          // Handle new multi-property disambiguation (multiple lots at same address)
+          if (propertyData.disambiguationType === 'multiple_properties') {
+            const optionLabels = ['A', 'B', 'C', 'D', 'E'];
+            const propertyList = propertyData.properties
+              .map((p, i) => `Option ${optionLabels[i]}: Lot ${p.lotplan} - ${p.areaDisplay} (${p.description})`)
+              .join('\n');
+
+            return {
+              answer: `I found ${propertyData.properties.length} properties at this address:\n\n${propertyList}\n\nWhich property are you interested in? Please specify the option letter or lot/plan number.`,
+              usedTool: 'get_property_info',
+              propertyData: propertyData,
+              disambiguationData: propertyData.properties
+            };
+          }
+
+          // Handle old OSM-based disambiguation (multiple addresses)
           const suggestionsList = propertyData.suggestions
             .map((s, i) => `${i + 1}. ${s.address}`)
             .join('\n');
-          
+
           return {
             answer: `I found a few properties matching that. Which one did you mean?\n\n${suggestionsList}`,
             usedTool: 'get_property_info',
