@@ -378,7 +378,28 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       };
     }
     
-    // PROPERTY, ANALYSIS, or UNCLEAR: Proceed with tools
+    // PROPERTY, ANALYSIS, or UNCLEAR: Check if query has specific property identifier
+    console.log('[CLAUDE] Checking for property identifier in query...');
+
+    // Check if query contains actual property identifier
+    const hasPropertyIdentifier = /\d{1,4}\s+[\w\s]+(street|st|avenue|ave|road|rd|drive|dr|parade|pde|court|ct|crescent|cres|place|pl|way|lane|ln)\s*,?\s*\w+|\b\d+[A-Z]{2,4}\d+\b/i.test(userQuery);
+
+    const isGeneralQuestion = /what should i|tell me about|general|planning|area|demographics|style|concept|want to build|thinking about|considering|looking at building|interested in|advice|suggestions|recommendations|possibilities|options/i.test(userQuery.toLowerCase());
+
+    const hasSuburbOnly = /\b(mermaid|broadbeach|surfers|southport|burleigh|palm beach|robina|varsity|currumbin|coolangatta|labrador|runaway bay|hope island|coomera|ormeau|oxenford|helensvale|miami|nobby beach|main beach|ashmore|benowa|bundall|elanora|merrimac|molendinar|mudgeeraba|nerang|paradise point|parkwood|reedy creek|tallebudgera|worongary|carrara|biggera waters|coombabah|gilston|gaven|highland park|hollywell|jacobs well|maudsland|pacific pines|pimpama|stapylton|upper coomera|willow vale|wongawallan|arundel)\b/i.test(userQuery);
+
+    // If general question without specific property, respond conversationally without tools
+    if (isGeneralQuestion && !hasPropertyIdentifier && !conversationContext.lastProperty) {
+      console.log('[CLAUDE] General question without property identifier - using conversational response');
+
+      if (sendProgress) {
+        sendProgress('💭 Thinking about your development concept...');
+        sendProgress('📋 No specific property yet - offering general guidance');
+      }
+
+      return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
+    }
+
     console.log('[CLAUDE] Proceeding with tool-enabled response');
 
     // Send initial context-aware progress message
@@ -391,13 +412,13 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     const tools = [
       {
         name: 'get_property_info',
-        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. Use this for zoning questions, planning controls, what can be built, overlay information. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
+        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. ONLY use if user provides a specific address (with street number) or lot/plan number. Do NOT use for general suburb questions like "I want to build in Robina" - those should be answered conversationally. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
         input_schema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
+              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or full street address with number (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable). Do NOT use suburb-only queries.'
             }
           },
           required: ['query']
@@ -405,13 +426,13 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'search_development_applications',
-        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
+        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs at a SPECIFIC street address with a number. Do NOT use for general suburb queries. ONLY use when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
         input_schema: {
           type: 'object',
           properties: {
             address: {
               type: 'string',
-              description: 'Full street address including suburb (e.g., "22 Mary Avenue, Broadbeach"). If suburb not provided, use context from conversation.'
+              description: 'Full street address with number including suburb (e.g., "22 Mary Avenue, Broadbeach"). Must have street number. If suburb not provided, use context from conversation.'
             },
             suburb: {
               type: 'string',
