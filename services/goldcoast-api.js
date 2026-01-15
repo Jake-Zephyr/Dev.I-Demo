@@ -352,8 +352,12 @@ async function searchCadastreByAddress(address) {
   const url = `${SERVICES.CADASTRE}/query`;
 
   // Build WHERE clause - search for properties matching street name and number
-  // Use LIKE to be flexible with formatting differences
-  let whereClause = `HOUSE_ADDRESS LIKE '%${streetNum}%${streetName}%' OR LONG_ADDRESS LIKE '%${streetNum}%${streetName}%'`;
+  // Must match street number at start of address AND contain street name
+  // Using UPPER() for case-insensitive matching
+  const streetNumUpper = streetNum.toUpperCase();
+  const streetNameUpper = streetName.toUpperCase();
+
+  let whereClause = `(UPPER(HOUSE_ADDRESS) LIKE '${streetNumUpper} %' OR UPPER(HOUSE_ADDRESS) LIKE '% ${streetNumUpper} %' OR UPPER(LONG_ADDRESS) LIKE '${streetNumUpper} %' OR UPPER(LONG_ADDRESS) LIKE '% ${streetNumUpper} %') AND (UPPER(HOUSE_ADDRESS) LIKE '%${streetNameUpper}%' OR UPPER(LONG_ADDRESS) LIKE '%${streetNameUpper}%')`;
 
   const params = new URLSearchParams({
     f: 'json',
@@ -720,11 +724,29 @@ export async function scrapeProperty(query, sendProgress = null) {
           }
         }
 
-        if (uniqueLotPlans.size > 1) {
-          console.log(`[API] Multiple distinct properties found, need disambiguation`);
+        // Separate parent lots (lot 0) from individual strata units (lot 1+)
+        const parentLots = [];
+        const individualUnits = [];
+
+        for (const [lotplan, feature] of uniqueLotPlans.entries()) {
+          const lotMatch = lotplan.match(/^(\d+)/);
+          const lotNum = lotMatch ? parseInt(lotMatch[1]) : null;
+
+          if (lotNum === 0) {
+            parentLots.push(feature);
+          } else {
+            individualUnits.push(feature);
+          }
+        }
+
+        // Prioritize parent lots - only show individual units if no parent exists
+        const lotsToShow = parentLots.length > 0 ? parentLots : individualUnits;
+
+        if (lotsToShow.length > 1) {
+          console.log(`[API] Multiple distinct properties found, need disambiguation (${parentLots.length} parent lots, ${individualUnits.length} units)`);
 
           // Build disambiguation data
-          const properties = Array.from(uniqueLotPlans.values()).map(f => {
+          const properties = lotsToShow.map(f => {
             const attrs = f.attributes;
             const area = attrs.AREA_SIZE_SQ_M ? Math.round(attrs.AREA_SIZE_SQ_M) : 0;
             const units = attrs.NUMBEROFUNITS || null;
@@ -749,8 +771,14 @@ export async function scrapeProperty(query, sendProgress = null) {
           };
         }
 
-        // Single match or user specified unit - use it
-        feature = addressMatches[0];
+        // Single match - use it (either single parent lot or single unit)
+        if (lotsToShow.length === 1) {
+          feature = lotsToShow[0];
+        } else {
+          // Fallback to first match if no filtering worked
+          feature = addressMatches[0];
+        }
+
         matchedAddress = cleanAddress;
         console.log(`[API] Using property: ${feature.attributes.LOTPLAN} (${Math.round(feature.attributes.AREA_SIZE_SQ_M)}sqm)`);
 
