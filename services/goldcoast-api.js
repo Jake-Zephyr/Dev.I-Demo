@@ -335,6 +335,55 @@ export async function geocodeAddress(address) {
 }
 
 /**
+ * Search cadastre by address string directly - more accurate than geocoding
+ * Returns all matching properties at that address
+ */
+async function searchCadastreByAddress(address) {
+  console.log(`[API] Searching cadastre by address: ${address}`);
+
+  // Extract street number and name for search
+  const streetNum = extractStreetNumber(address);
+  const streetName = extractStreetName(address);
+
+  if (!streetName) {
+    return null;
+  }
+
+  const url = `${SERVICES.CADASTRE}/query`;
+
+  // Build WHERE clause - search for properties matching street name and number
+  // Use LIKE to be flexible with formatting differences
+  let whereClause = `HOUSE_ADDRESS LIKE '%${streetNum}%${streetName}%' OR LONG_ADDRESS LIKE '%${streetNum}%${streetName}%'`;
+
+  const params = new URLSearchParams({
+    f: 'json',
+    where: whereClause,
+    outFields: '*',
+    outSR: '28356',
+    returnGeometry: 'true'
+  });
+
+  const resp = await fetch(`${url}?${params}`);
+  const data = await resp.json();
+
+  if (data.features && data.features.length > 0) {
+    console.log(`[API] ✓ Found ${data.features.length} cadastre match(es) for address search`);
+
+    // Sort by area (largest first) to prioritize parent lots
+    const sorted = data.features.sort((a, b) => {
+      const areaA = a.attributes.AREA_SIZE_SQ_M || 0;
+      const areaB = b.attributes.AREA_SIZE_SQ_M || 0;
+      return areaB - areaA;
+    });
+
+    return sorted;
+  }
+
+  console.log(`[API] No cadastre matches found by address search`);
+  return null;
+}
+
+/**
  * Get cadastre data by coordinates - returns geometry for overlay queries
  * Now includes validation against original search address
  * Also detects strata lots and tries to find parent parcel
@@ -631,35 +680,91 @@ async function getOverlays(lotGeometry) {
 export async function scrapeProperty(query, sendProgress = null) {
   const startTime = Date.now();
   console.log(`[API] Starting property lookup: ${query}`);
-  
+
   try {
     const { type, value } = detectQueryType(query);
     console.log(`[API] Detected query type: ${type}`);
-    
+
     let feature;
     let matchedAddress = null;
-    
+    let multipleMatches = null;
+
     if (type === 'lotplan') {
       if (sendProgress) sendProgress('📋 Looking up lot/plan...');
       feature = await getCadastreByLotPlan(value);
-      
+
     } else {
       const unitMatch = value.match(/^(\d+)[\/\-]|^Unit\s+(\d+)/i);
       const unitNumber = unitMatch ? (unitMatch[1] || unitMatch[2]) : null;
       const cleanAddress = unitNumber ? value.replace(/^\d+[\/\-]\s*|^Unit\s+\d+,?\s*/i, '').trim() : value;
-      
+
       if (unitNumber) {
         console.log(`[API] Detected unit ${unitNumber}, base address: ${cleanAddress}`);
         if (sendProgress) sendProgress(`🏢 Searching for Unit ${unitNumber}...`);
       }
-      
-      if (sendProgress) sendProgress('🌍 Locating property...');
-      const geocodeResult = await geocodeAddress(cleanAddress);
-      matchedAddress = geocodeResult.matchedAddress;
-      
-      if (sendProgress) sendProgress('📋 Retrieving lot information...');
-      // Pass the original search address for validation
-      feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, unitNumber, cleanAddress);
+
+      // PHASE 1: Try searching cadastre by address directly (more accurate)
+      if (sendProgress) sendProgress('🔍 Searching cadastre database...');
+      const addressMatches = await searchCadastreByAddress(cleanAddress);
+
+      if (addressMatches && addressMatches.length > 0) {
+        console.log(`[API] Found ${addressMatches.length} properties at this address`);
+
+        // If multiple distinct properties found (different lot/plans), return for disambiguation
+        // Filter to unique lot/plan combinations (exclude duplicates)
+        const uniqueLotPlans = new Map();
+        for (const match of addressMatches) {
+          const lotplan = match.attributes.LOTPLAN;
+          if (!uniqueLotPlans.has(lotplan)) {
+            uniqueLotPlans.set(lotplan, match);
+          }
+        }
+
+        if (uniqueLotPlans.size > 1) {
+          console.log(`[API] Multiple distinct properties found, need disambiguation`);
+
+          // Build disambiguation data
+          const properties = Array.from(uniqueLotPlans.values()).map(f => {
+            const attrs = f.attributes;
+            const area = attrs.AREA_SIZE_SQ_M ? Math.round(attrs.AREA_SIZE_SQ_M) : 0;
+            const units = attrs.NUMBEROFUNITS || null;
+
+            return {
+              lotplan: attrs.LOTPLAN,
+              address: attrs.LONG_ADDRESS || attrs.HOUSE_ADDRESS || cleanAddress,
+              area: area,
+              areaDisplay: `${area} sqm`,
+              units: units,
+              description: units > 1 ? `${units}-unit complex` : 'Single property'
+            };
+          });
+
+          // Return disambiguation response
+          return {
+            needsDisambiguation: true,
+            disambiguationType: 'multiple_properties',
+            properties: properties,
+            originalQuery: query,
+            message: `Found ${properties.length} properties at ${cleanAddress}. Which one are you interested in?`
+          };
+        }
+
+        // Single match or user specified unit - use it
+        feature = addressMatches[0];
+        matchedAddress = cleanAddress;
+        console.log(`[API] Using property: ${feature.attributes.LOTPLAN} (${Math.round(feature.attributes.AREA_SIZE_SQ_M)}sqm)`);
+
+      } else {
+        // PHASE 2: Fall back to geocoding if address search didn't work
+        console.log(`[API] Address search failed, falling back to geocoding...`);
+        if (sendProgress) sendProgress('🌍 Locating property...');
+        const geocodeResult = await geocodeAddress(cleanAddress);
+        matchedAddress = geocodeResult.matchedAddress;
+
+        if (sendProgress) sendProgress('📋 Retrieving lot information...');
+        // Pass the original search address for validation
+        feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, unitNumber, cleanAddress);
+      }
     }
     
     if (!feature.geometry || !feature.geometry.rings) {
