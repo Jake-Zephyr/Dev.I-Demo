@@ -381,6 +381,13 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // PROPERTY, ANALYSIS, or UNCLEAR: Proceed with tools
     console.log('[CLAUDE] Proceeding with tool-enabled response');
 
+    // Send initial context-aware progress message
+    if (sendProgress) {
+      const queryPreview = userQuery.length > 60 ? userQuery.substring(0, 60) + '...' : userQuery;
+      sendProgress(`💭 Analyzing: "${queryPreview}"`);
+      sendProgress('🤔 Determining required data sources...');
+    }
+
     const tools = [
       {
         name: 'get_property_info',
@@ -782,8 +789,9 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
       // Handle property info tool
       if (toolUse.name === 'get_property_info') {
-        if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
-        const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
+        const propertyQuery = toolUse.input.query;
+        if (sendProgress) sendProgress(`📍 Looking up ${propertyQuery} in Gold Coast database...`);
+        const propertyData = await scrapeProperty(propertyQuery, sendProgress);
 
         if (propertyData.needsDisambiguation) {
           console.log('[CLAUDE] Disambiguation needed, asking user...');
@@ -845,12 +853,13 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
         console.log('[CLAUDE] Property data retrieved');
 
-        if (sendProgress) sendProgress('🧠 Searching planning regulations...');
+        if (sendProgress) sendProgress('✓ Located property - retrieving planning controls...');
         console.log('[CLAUDE] Searching planning scheme database...');
         const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
         console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
-        
-        if (sendProgress) sendProgress('✍️ Analyzing development potential...');
+
+        const zoneInfo = propertyData.property?.zone || 'zone';
+        if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays and restrictions...`);
         
         toolResult = {
           ...propertyData,
@@ -860,10 +869,9 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
       
       // Handle DA search tool - WITH CONTEXT AWARENESS
       else if (toolUse.name === 'search_development_applications') {
-        if (sendProgress) sendProgress('🔍 Searching development applications...');
-        
         // Build full address using context if suburb missing
         let searchAddress = toolUse.input.address;
+        if (sendProgress) sendProgress(`🔍 Searching development applications for ${searchAddress}...`);
         const inputSuburb = toolUse.input.suburb;
         
         // Check if address already has suburb
@@ -888,8 +896,11 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
           );
           
           console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-          if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
-          
+          const daCountMsg = daResult.count === 0 ? 'No applications found'
+            : daResult.count === 1 ? '✓ Found 1 development application'
+            : `✓ Found ${daResult.count} development applications`;
+          if (sendProgress) sendProgress(daCountMsg);
+
           toolResult = daResult;
         } catch (daError) {
           console.error('[CLAUDE] DA search failed:', daError.message);
@@ -934,7 +945,8 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
       // Handle start feasibility tool
       else if (toolUse.name === 'start_feasibility') {
         console.log('[CLAUDE] Starting feasibility analysis, mode:', toolUse.input.mode);
-        if (sendProgress) sendProgress('📊 Preparing feasibility analysis...');
+        const feasPropertyAddr = toolUse.input.propertyAddress || conversationContext.lastProperty || 'property';
+        if (sendProgress) sendProgress(`📊 Preparing feasibility analysis for ${feasPropertyAddr}...`);
         
         const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
         
@@ -980,8 +992,8 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
   // Handle quick feasibility calculation
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] Calculating quick feasibility');
-  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
+  if (sendProgress) sendProgress('🧮 Calculating project revenue...');
+
   const input = toolUse.input;
   
   // Get values from input
@@ -1024,12 +1036,16 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   
   // Calculate costs
   const sellingCosts = grvExclGST * sellingDecimal;
-  
+
+  if (sendProgress) sendProgress('💰 Analyzing project costs...');
+
   // Finance costs (50% average debt outstanding)
   const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
   const avgDebt = totalDebt * 0.5;
   const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-  
+
+  if (sendProgress) sendProgress('📊 Calculating profit margins...');
+
   // Total costs and profit
   const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts;
   const grossProfit = grvExclGST - totalCost;
@@ -1053,8 +1069,8 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   else if (profitMargin >= 20) viability = 'marginal';
   else if (profitMargin >= 15) viability = 'challenging';
   else viability = 'not_viable';
-  
-  if (sendProgress) sendProgress('✅ Feasibility calculated');
+
+  if (sendProgress) sendProgress('✓ Feasibility analysis complete');
   
   toolResult = {
     success: true,
@@ -1112,6 +1128,8 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   };
 }
       // Send the tool result back to Claude
+      if (sendProgress) sendProgress('✍️ Preparing your planning summary...');
+
       const finalResponse = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 800,
