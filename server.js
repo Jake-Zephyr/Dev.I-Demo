@@ -430,13 +430,9 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
       }
     }
     
-    sendProgress('Parsing query parameters...');
-    sendProgress('Connecting to Gold Coast planning database...');
-    sendProgress('Scraping property information...');
-    
+    // Don't send generic progress here - let claude.js handle all progress messages
+    // based on what it's actually doing (conversational vs tool-based)
     const response = await getAdvisory(query, conversationHistory, sendProgress);
-    
-    sendProgress('Finalizing report...');
     
     res.write(`data: ${JSON.stringify({ 
       type: 'complete', 

@@ -364,6 +364,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // CONVERSATIONAL: Respond without tools (fast path)
     if (intent === 'conversational') {
       console.log('[CLAUDE] Conversational message - skipping tools');
+      if (sendProgress) sendProgress('💭 Thinking...');
       return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
     }
     
@@ -392,21 +393,16 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     if (isGeneralQuestion && !hasPropertyIdentifier && !conversationContext.lastProperty) {
       console.log('[CLAUDE] General question without property identifier - using conversational response');
 
-      if (sendProgress) {
-        sendProgress('💭 Thinking about your development concept...');
-        sendProgress('📋 No specific property yet - offering general guidance');
-      }
+      if (sendProgress) sendProgress('💭 Thinking...');
 
       return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
     }
 
     console.log('[CLAUDE] Proceeding with tool-enabled response');
 
-    // Send initial context-aware progress message
+    // Send initial progress message for tool-based queries
     if (sendProgress) {
-      const queryPreview = userQuery.length > 60 ? userQuery.substring(0, 60) + '...' : userQuery;
-      sendProgress(`💭 Analyzing: "${queryPreview}"`);
-      sendProgress('🤔 Determining required data sources...');
+      sendProgress('💭 Analysing your question...');
     }
 
     const tools = [
@@ -811,7 +807,7 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
       // Handle property info tool
       if (toolUse.name === 'get_property_info') {
         const propertyQuery = toolUse.input.query;
-        if (sendProgress) sendProgress(`📍 Looking up ${propertyQuery} in Gold Coast database...`);
+        if (sendProgress) sendProgress(`📍 Accessing planning controls for ${propertyQuery}...`);
         const propertyData = await scrapeProperty(propertyQuery, sendProgress);
 
         if (propertyData.needsDisambiguation) {
@@ -874,13 +870,13 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
         console.log('[CLAUDE] Property data retrieved');
 
-        if (sendProgress) sendProgress('✓ Located property - retrieving planning controls...');
+        if (sendProgress) sendProgress('✓ Located property - checking zoning controls...');
         console.log('[CLAUDE] Searching planning scheme database...');
         const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
         console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
 
         const zoneInfo = propertyData.property?.zone || 'zone';
-        if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays and restrictions...`);
+        if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays...`);
         
         toolResult = {
           ...propertyData,
