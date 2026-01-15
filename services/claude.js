@@ -1054,7 +1054,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   // Calculate costs
   const sellingCosts = grvExclGST * sellingDecimal;
 
-  if (sendProgress) sendProgress('💰 Analyzing project costs...');
+  if (sendProgress) sendProgress('💰 Analysing project costs...');
 
   // Finance costs (50% average debt outstanding)
   const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;

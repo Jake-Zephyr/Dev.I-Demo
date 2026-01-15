@@ -694,7 +694,7 @@ export async function scrapeProperty(query, sendProgress = null) {
     let multipleMatches = null;
 
     if (type === 'lotplan') {
-      if (sendProgress) sendProgress('📋 Looking up lot/plan...');
+      if (sendProgress) sendProgress(`📋 Accessing planning data for ${value}...`);
       feature = await getCadastreByLotPlan(value);
 
     } else {
@@ -708,7 +708,7 @@ export async function scrapeProperty(query, sendProgress = null) {
       }
 
       // PHASE 1: Try searching cadastre by address directly (more accurate)
-      if (sendProgress) sendProgress('🔍 Searching cadastre database...');
+      if (sendProgress) sendProgress(`🔍 Accessing planning data for ${cleanAddress}...`);
       const addressMatches = await searchCadastreByAddress(cleanAddress);
 
       if (addressMatches && addressMatches.length > 0) {
@@ -785,11 +785,11 @@ export async function scrapeProperty(query, sendProgress = null) {
       } else {
         // PHASE 2: Fall back to geocoding if address search didn't work
         console.log(`[API] Address search failed, falling back to geocoding...`);
-        if (sendProgress) sendProgress('🌍 Locating property...');
+        if (sendProgress) sendProgress(`🌍 Locating ${cleanAddress}...`);
         const geocodeResult = await geocodeAddress(cleanAddress);
         matchedAddress = geocodeResult.matchedAddress;
 
-        if (sendProgress) sendProgress('📋 Retrieving lot information...');
+        if (sendProgress) sendProgress('📋 Retrieving zoning controls...');
         // Pass the original search address for validation
         feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, unitNumber, cleanAddress);
       }
@@ -806,8 +806,8 @@ export async function scrapeProperty(query, sendProgress = null) {
     };
     
     console.log(`[API] Using lot geometry with ${lotGeometry.rings[0].length} vertices`);
-    
-    if (sendProgress) sendProgress('🏗️ Analyzing zoning and overlays...');
+
+    if (sendProgress) sendProgress('🏗️ Retrieving zoning controls and overlays...');
     const [zone, height, overlays] = await Promise.all([
       getZone(lotGeometry),
       getHeight(lotGeometry),
@@ -919,24 +919,24 @@ export async function scrapeProperty(query, sendProgress = null) {
  */
 export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
   console.log(`[API] Overlays-only lookup for: ${address}`);
-  
+
   try {
-    if (sendProgress) sendProgress('🌍 Locating property...');
+    if (sendProgress) sendProgress(`🌍 Locating ${address}...`);
     const geocodeResult = await geocodeAddress(address);
-    
-    if (sendProgress) sendProgress('📋 Retrieving lot geometry...');
+
+    if (sendProgress) sendProgress('📋 Accessing property data...');
     const feature = await getCadastreWithGeometry(geocodeResult.lat, geocodeResult.lon, null, address);
-    
+
     if (!feature.geometry || !feature.geometry.rings) {
       throw new Error('No geometry returned for property');
     }
-    
+
     const lotGeometry = {
       rings: feature.geometry.rings,
       spatialReference: { wkid: 28356 }
     };
-    
-    if (sendProgress) sendProgress('🗺️ Retrieving overlays...');
+
+    if (sendProgress) sendProgress('🗺️ Checking overlays...');
     const overlays = await getOverlays(lotGeometry);
     
     const overlayNames = [...new Set(overlays.map(o => o.layerName))];
