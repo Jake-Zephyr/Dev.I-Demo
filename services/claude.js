@@ -35,8 +35,8 @@ function fixBulletPoints(text) {
 
   // Only fix bullets if this is an overlay list response
   if (text.includes('Planning Overlays for')) {
-    // Add newline after "Planning Overlays for [address] (Lot [lotplan]):" heading
-    let fixed = text.replace(/(Planning Overlays for [^:]+:)\s*/g, '$1\n');
+    // Add TWO newlines after "Planning Overlays for [address] (Lot [lotplan]):" heading for proper spacing
+    let fixed = text.replace(/(Planning Overlays for [^:]+:)\s*/g, '$1\n\n');
 
     // Convert all inline bullets to line-separated format
     fixed = fixed.replace(/ • /g, '\n• ');
@@ -1236,11 +1236,15 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       };
     } else {
       console.log('[CLAUDE] Answered without tool use');
-      
+
       const textContent = response.content.find(c => c.type === 'text');
-      
+
+      // Format and fix bullet points for non-tool responses too
+      let formattedAnswer = formatIntoParagraphs(stripMarkdown(textContent?.text));
+      formattedAnswer = fixBulletPoints(formattedAnswer);
+
       return {
-        answer: formatIntoParagraphs(stripMarkdown(textContent?.text)) || 'Unable to generate response',
+        answer: formattedAnswer || 'Unable to generate response',
         propertyData: null,
         usedTool: false
       };
