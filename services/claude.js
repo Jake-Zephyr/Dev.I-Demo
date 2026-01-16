@@ -41,6 +41,21 @@ function fixBulletPoints(text) {
     // Convert all inline bullets to line-separated format
     fixed = fixed.replace(/ • /g, '\n• ');
 
+    // Remove duplicate overlay lists if Claude generated them twice
+    // Match "Planning Overlays for..." through the list, then check if it repeats
+    const overlayPattern = /(Planning Overlays for[^:]+:\s*\n\n(?:• [^\n]+\n)+)/g;
+    const matches = fixed.match(overlayPattern);
+
+    if (matches && matches.length > 1) {
+      // Found duplicate lists - keep only the first one
+      console.log('[CLAUDE] Detected duplicate overlay lists, removing duplicates');
+      const firstList = matches[0];
+      // Remove all subsequent identical lists
+      for (let i = 1; i < matches.length; i++) {
+        fixed = fixed.replace(matches[i], '');
+      }
+    }
+
     return fixed;
   }
 
