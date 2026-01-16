@@ -1228,18 +1228,13 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
       const isPropertyAnalysis = toolUse.name === 'get_property_info';
 
-      // DEBUG: Log the raw response to see if newlines exist
-      console.log('[CLAUDE] Raw response text:', JSON.stringify(textContent?.text?.substring(0, 500)));
-
       // For property analysis, preserve professional structure; for other responses, apply casual formatting
       let formattedAnswer = isPropertyAnalysis
         ? stripMarkdown(textContent?.text)
         : formatIntoParagraphs(stripMarkdown(textContent?.text));
 
-      // Fix inline bullet points by adding newlines between them
+      // Fix inline bullet points by adding newlines between them (only for lists, not explanations)
       formattedAnswer = fixBulletPoints(formattedAnswer);
-
-      console.log('[CLAUDE] Formatted answer:', JSON.stringify(formattedAnswer?.substring(0, 500)));
 
       return {
         answer: formattedAnswer || 'Unable to generate response',
