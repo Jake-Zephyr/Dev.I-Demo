@@ -28,35 +28,24 @@ function stripMarkdown(text) {
 
 /**
  * Fix inline bullet points by converting them to proper line-separated format
- * ONLY applies to actual lists, not explanatory text with occasional bullets
+ * ONLY applies when response contains "Planning Overlays" (overlay lists)
  */
 function fixBulletPoints(text) {
   if (!text) return text;
 
-  // First, add newline after "Planning Overlays for [address] (Lot [lotplan]):" pattern
-  let fixed = text.replace(/(Planning Overlays for [^:]+:)\s*•/g, '$1\n• ');
+  // Only fix bullets if this is an overlay list response
+  if (text.includes('Planning Overlays for')) {
+    // Add newline after "Planning Overlays for [address] (Lot [lotplan]):" heading
+    let fixed = text.replace(/(Planning Overlays for [^:]+:)\s*/g, '$1\n');
 
-  // Only convert inline bullets to line-separated IF it looks like a list
-  // A list has 3+ bullets close together (within ~200 chars of each other)
-  // Count bullets in the text
-  const bulletCount = (fixed.match(/\s•\s/g) || []).length;
+    // Convert all inline bullets to line-separated format
+    fixed = fixed.replace(/ • /g, '\n• ');
 
-  // Only apply bullet fixes if there are 3+ bullets AND they're in the first 500 chars
-  // This indicates a list, not explanatory text
-  const firstPart = fixed.substring(0, 500);
-  const bulletsInFirstPart = (firstPart.match(/\s•\s/g) || []).length;
-
-  if (bulletCount >= 3 && bulletsInFirstPart >= 3) {
-    // This looks like a list - convert inline bullets to line-separated
-    // Only apply to the list section (first ~600 chars)
-    const listPart = fixed.substring(0, 600);
-    const restPart = fixed.substring(600);
-
-    const fixedListPart = listPart.replace(/ • /g, '\n• ');
-    fixed = fixedListPart + restPart;
+    return fixed;
   }
 
-  return fixed;
+  // Not an overlay list - return unchanged
+  return text;
 }
 
 /**
