@@ -27,6 +27,23 @@ function stripMarkdown(text) {
 }
 
 /**
+ * Fix inline bullet points by converting them to proper line-separated format
+ * Converts "• Item 1 • Item 2 • Item 3" to "• Item 1\n• Item 2\n• Item 3"
+ */
+function fixBulletPoints(text) {
+  if (!text) return text;
+
+  // Replace " • " (space-bullet-space) with "\n• " (newline-bullet-space)
+  // This converts inline bullets to line-separated bullets
+  let fixed = text.replace(/ • /g, '\n• ');
+
+  // Also handle cases where bullet is at start after colon (like "Overlays: • Item")
+  fixed = fixed.replace(/:\s*•/g, ':\n•');
+
+  return fixed;
+}
+
+/**
  * Force paragraph breaks every 2-3 sentences
  */
 function formatIntoParagraphs(text) {
@@ -689,23 +706,24 @@ When user asks specifically about "overlays" or "what are the overlays" or simil
 - Respond with ONLY a simple bullet-pointed list
 - NO explanations, NO grouping, NO categories, NO descriptions
 - Just list each overlay name with a bullet point
-- CRITICAL: Put each bullet point on a SEPARATE LINE (newline character after each)
-- DO NOT put multiple bullets on the same line separated by dots
-- Format: "Planning Overlays for [address] (Lot [lotplan]):" then each bullet on new line
-- ONLY provide detailed explanations if user specifically asks "what do these mean" or "explain the overlays"
+- CRITICAL: Put NEWLINE CHARACTER (\n) after EACH bullet point
+- Each bullet must start on a NEW LINE
+- DO NOT put multiple bullets on the same line
+- After "Planning Overlays:" heading, press ENTER/RETURN before first bullet
+- After each bullet point, press ENTER/RETURN before next bullet
 
-CORRECT FORMAT (each bullet on its own line):
-Planning Overlays for 122 Surf Parade, Broadbeach (Lot 0SP326641):
-• Land at or below 5m AHD
-• Land at or below 20m AHD
-• Airport environs - Procedures for Air Navigation Services, Aircraft Operational (PANS-OPS) surfaces
-• Building height overlay
-• Foreshore seawall setback
+YOU MUST FORMAT IT EXACTLY LIKE THIS (copy this structure):
 
-WRONG FORMAT (all on one line - DO NOT DO THIS):
+Planning Overlays for [address] (Lot [lotplan]):
+• [Overlay 1]\n
+• [Overlay 2]\n
+• [Overlay 3]\n
+• [Overlay 4]\n
+
+WRONG - DO NOT DO THIS (all run together):
 Planning Overlays: • Land at or below 5m AHD • Land at or below 20m AHD • Airport environs
 
-Use the CORRECT FORMAT with each bullet on its own line. Nothing more unless specifically asked.
+Use ENTER/RETURN key after each bullet. Think of it like pressing RETURN on a keyboard after typing each line.
 
 HANDLING AMBIGUOUS RESPONSES:
 - If user says "yes", "ok", "sure" to a question with multiple options, use ask_clarification tool
@@ -1194,10 +1212,18 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
       const isPropertyAnalysis = toolUse.name === 'get_property_info';
 
+      // DEBUG: Log the raw response to see if newlines exist
+      console.log('[CLAUDE] Raw response text:', JSON.stringify(textContent?.text?.substring(0, 500)));
+
       // For property analysis, preserve professional structure; for other responses, apply casual formatting
-      const formattedAnswer = isPropertyAnalysis
+      let formattedAnswer = isPropertyAnalysis
         ? stripMarkdown(textContent?.text)
         : formatIntoParagraphs(stripMarkdown(textContent?.text));
+
+      // Fix inline bullet points by adding newlines between them
+      formattedAnswer = fixBulletPoints(formattedAnswer);
+
+      console.log('[CLAUDE] Formatted answer:', JSON.stringify(formattedAnswer?.substring(0, 500)));
 
       return {
         answer: formattedAnswer || 'Unable to generate response',
