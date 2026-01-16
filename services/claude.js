@@ -27,6 +27,23 @@ function stripMarkdown(text) {
 }
 
 /**
+ * Fix inline bullet points by converting them to proper line-separated format
+ * Converts "• Item 1 • Item 2 • Item 3" to "• Item 1\n• Item 2\n• Item 3"
+ */
+function fixBulletPoints(text) {
+  if (!text) return text;
+
+  // Replace " • " (space-bullet-space) with "\n• " (newline-bullet-space)
+  // This converts inline bullets to line-separated bullets
+  let fixed = text.replace(/ • /g, '\n• ');
+
+  // Also handle cases where bullet is at start after colon (like "Overlays: • Item")
+  fixed = fixed.replace(/:\s*•/g, ':\n•');
+
+  return fixed;
+}
+
+/**
  * Force paragraph breaks every 2-3 sentences
  */
 function formatIntoParagraphs(text) {
@@ -1199,9 +1216,12 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       console.log('[CLAUDE] Raw response text:', JSON.stringify(textContent?.text?.substring(0, 500)));
 
       // For property analysis, preserve professional structure; for other responses, apply casual formatting
-      const formattedAnswer = isPropertyAnalysis
+      let formattedAnswer = isPropertyAnalysis
         ? stripMarkdown(textContent?.text)
         : formatIntoParagraphs(stripMarkdown(textContent?.text));
+
+      // Fix inline bullet points by adding newlines between them
+      formattedAnswer = fixBulletPoints(formattedAnswer);
 
       console.log('[CLAUDE] Formatted answer:', JSON.stringify(formattedAnswer?.substring(0, 500)));
 
