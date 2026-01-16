@@ -9,19 +9,20 @@ const anthropic = new Anthropic({
 
 /**
  * Strip markdown formatting from Claude's response
+ * PRESERVES bullet points (•) and newlines for structured content
  */
 function stripMarkdown(text) {
   if (!text) return text;
-  
+
   return text
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/\*/g, '')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/^[\-•]\s*/gm, '')
-    .replace(/^\d+[\.\)]\s*/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/  +/g, ' ')
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove bold
+    .replace(/\*(.*?)\*/g, '$1')       // Remove italics
+    .replace(/\*/g, '')                // Remove remaining asterisks
+    .replace(/^#{1,6}\s*/gm, '')       // Remove headings
+    // REMOVED: .replace(/^[\-•]\s*/gm, '') - We want to keep bullet points!
+    .replace(/^\d+[\.\)]\s*/gm, '')    // Remove numbered lists
+    .replace(/\n{3,}/g, '\n\n')        // Collapse multiple newlines to double
+    .replace(/  +/g, ' ')              // Collapse multiple spaces
     .trim();
 }
 
