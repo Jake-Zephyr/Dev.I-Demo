@@ -1048,24 +1048,69 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
           if (docResult.success) {
             console.log(`[CLAUDE] Downloaded decision notice: ${docResult.filename}`);
-            if (sendProgress) sendProgress(docResult.isSigned ? '✅ Downloaded signed decision notice' : '⚠️ Downloaded unsigned decision notice');
+            if (sendProgress) sendProgress(docResult.isSigned ? '✅ Analyzing signed decision notice...' : '⚠️ Analyzing unsigned decision notice...');
 
             // Read PDF for Claude to analyze
             const fs = await import('fs');
             const pdfBuffer = fs.readFileSync(docResult.filePath);
             const base64Pdf = pdfBuffer.toString('base64');
 
-            toolResult = {
-              success: true,
-              application_number: appNumber,
-              filename: docResult.filename,
-              file_path: docResult.filePath,
-              file_size_kb: docResult.fileSizeKB,
-              is_signed: docResult.isSigned,
-              document_name: docResult.documentName,
-              warning: docResult.warning,
-              pdf_base64: base64Pdf  // For Claude analysis
-            };
+            // Analyze PDF with Claude
+            console.log('[CLAUDE] Analyzing decision notice with Claude...');
+            try {
+              const analysisResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 2000,
+                messages: [{
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'document',
+                      source: {
+                        type: 'base64',
+                        media_type: 'application/pdf',
+                        data: base64Pdf
+                      }
+                    },
+                    {
+                      type: 'text',
+                      text: 'summarise the more pertinent conditions within this decision notice'
+                    }
+                  ]
+                }]
+              });
+
+              const summary = analysisResponse.content.find(c => c.type === 'text')?.text || 'Could not analyze document';
+              console.log('[CLAUDE] ✅ Analysis complete');
+              if (sendProgress) sendProgress('✅ Analysis complete');
+
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                is_signed: docResult.isSigned,
+                document_name: docResult.documentName,
+                warning: docResult.warning,
+                summary: summary  // The analyzed summary
+              };
+            } catch (analysisError) {
+              console.error('[CLAUDE] PDF analysis failed:', analysisError.message);
+              // Still return success with file info, but note analysis failed
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                is_signed: docResult.isSigned,
+                document_name: docResult.documentName,
+                warning: docResult.warning,
+                summary: 'PDF analysis failed - document downloaded but could not be analyzed',
+                analysis_error: analysisError.message
+              };
+            }
           } else {
             console.error('[CLAUDE] Decision notice download failed:', docResult.error);
             toolResult = {
