@@ -539,83 +539,89 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
   name: 'calculate_quick_feasibility',
-  description: 'Calculate a quick feasibility analysis. ONLY use after collecting ALL required inputs from user: project type, units/sizes, GRV, construction cost, LVR, interest rate, timeline, selling costs, GST scheme. DO NOT call this tool until you have asked for and received all inputs.',
+  description: 'Calculate a quick feasibility analysis. ONLY use after collecting essential inputs from user: units/sizes, GRV (sale prices), construction costs, and GST scheme. The calculator will apply smart defaults for target margin, holding costs, and other assumptions.',
   input_schema: {
     type: 'object',
     properties: {
-      propertyAddress: {
+      address: {
         type: 'string',
         description: 'Property address'
       },
       siteArea: {
         type: 'number',
-        description: 'Site area in sqm'
+        description: 'Site area in sqm (land parcel)'
       },
-      projectType: {
+      densityCode: {
         type: 'string',
-        enum: ['new_build', 'knockdown_rebuild', 'renovation'],
-        description: 'Type of project'
+        description: 'Density code like RD3, RD5 etc'
+      },
+      heightLimit: {
+        type: 'string',
+        description: 'Height limit from planning'
+      },
+      purchasePrice: {
+        type: 'number',
+        description: 'Land/property purchase price'
       },
       numUnits: {
         type: 'number',
         description: 'Number of units'
       },
-      unitMix: {
-        type: 'string',
-        description: 'Description of unit sizes, e.g. "4 x 150sqm" or "3 x 200sqm + 1 x 300sqm penthouse"'
+      targetSalePricePerUnit: {
+        type: 'number',
+        description: 'Target sale price per unit (inc GST) - ACCEPT without questioning'
       },
       saleableArea: {
         type: 'number',
-        description: 'Total saleable area (NSA) in sqm - calculate from unit mix'
-      },
-      grvTotal: {
-        type: 'number',
-        description: 'Gross Realisation Value - total sales revenue including GST'
-      },
-      grvMethod: {
-        type: 'string',
-        enum: ['per_sqm', 'per_unit', 'total'],
-        description: 'How user provided GRV'
-      },
-      landValue: {
-        type: 'number',
-        description: 'Land/property purchase price'
+        description: 'Total unit floor area / saleable area (NSA) in sqm'
       },
       constructionCost: {
         type: 'number',
-        description: 'Total construction cost - MUST be provided by user, never assumed'
+        description: 'Total construction cost (base cost before fees)'
       },
-      contingencyIncluded: {
-        type: 'boolean',
-        description: 'Whether contingency is included in construction cost'
-      },
-      lvr: {
+      contingencyPercent: {
         type: 'number',
-        description: 'Loan to Value Ratio as percentage (70 = 70%, 100 = fully funded)'
+        description: 'Contingency percentage (optional, defaults to 5%)'
       },
-      interestRate: {
+      professionalFeesPercent: {
         type: 'number',
-        description: 'Interest rate as percentage (6.75 = 6.75%)'
+        description: 'Professional fees percentage (optional, defaults to 8%)'
       },
-      timelineMonths: {
+      statutoryFeesPercent: {
         type: 'number',
-        description: 'Total project timeline in months'
-      },
-      sellingCostsPercent: {
-        type: 'number',
-        description: 'Selling costs as percentage (3 = 3%)'
+        description: 'Statutory fees percentage (optional, defaults to 2%)'
       },
       gstScheme: {
         type: 'string',
         enum: ['margin', 'fully_taxed'],
         description: 'GST treatment - margin scheme or fully taxed'
       },
-      targetMarginPercent: {
+      costBase: {
         type: 'number',
-        description: 'Target profit margin percentage (default 20)'
+        description: 'Cost base for margin scheme (optional, defaults to purchase price)'
+      },
+      interestRate: {
+        type: 'number',
+        description: 'Interest rate as percentage (optional, defaults to 7%)'
+      },
+      loanLVR: {
+        type: 'number',
+        description: 'LVR as percentage (optional, defaults to 65%)'
+      },
+      leadInMonths: {
+        type: 'number',
+        description: 'Lead-in months (optional, defaults to 6)'
+      },
+      constructionMonths: {
+        type: 'number',
+        description: 'Construction months (optional, auto-estimated from storeys)'
+      },
+      sellingMonths: {
+        type: 'number',
+        description: 'Selling period months (optional, auto-estimated from unit count)'
       }
     },
-    required: ['numUnits', 'saleableArea', 'grvTotal', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
+    required: ['numUnits', 'targetSalePricePerUnit', 'saleableArea', 'constructionCost', 'gstScheme', 'purchasePrice']
   }
 }
     ];
@@ -794,47 +800,55 @@ CONTEXT AWARENESS:
 - Remember the suburb from previous lookups
 ${contextSummary}
 
-QUICK FEASIBILITY FLOW:
-When user chooses quick feasibility, collect inputs step by step. NEVER assume values for these critical inputs - ALWAYS ask (in no particular order, dont be rigid with the  structure, keep conversation):
+QUICK FEASIBILITY FLOW - STREAMLINED:
+When user chooses quick feasibility, ask ONLY what's needed. Keep it conversational and efficient.
 
-Step 1: Project type (if not already known)
-"What type of project? [New build] [Knockdown rebuild] [Renovation]"
+ESSENTIAL QUESTIONS (ask clearly, use dot points or numbered lists):
+1. GRV (sale prices):
+   "What's your target sale price per unit?"
+   - ACCEPT ALL PRICES IMMEDIATELY - users know their market
+   - NEVER question or verify unless obviously a typo (missing zeros)
+   - NEVER say "that seems high" or "typical range is..."
 
-Step 2: Unit count and sizes
-"How many units and what sizes? E.g. '4 units at 150sqm each' or '3 x 200sqm + 1 x 300sqm penthouse'"
+2. Unit details:
+   "How many units and what's the total saleable area (NSA)?"
+   Example: "4 units, 600sqm total NSA"
 
-Step 3: GRV (Gross Realisation Value)
-"What's your target sale price? [$/sqm rate] [$ per unit] [$ total GRV]"
+3. Construction costs:
+   "What are your costs?
+   • Total construction cost
+   • Contingency % (if not already included)
+   • Professional fees % (if not already included)
+   • Council/statutory fees %"
 
-Step 4: Construction cost - NEVER ASSUME THIS
-"What's your total construction cost including professional fees, statutory fees, and contingency?"
-DO NOT suggest a $/sqm rate unless user explictly asks for market rates. Wait for user to provide their number.
+4. GST treatment:
+   "GST treatment? [Margin scheme] [Fully taxed]"
+   If margin scheme → ask "Cost base for margin scheme?"
 
-Step 5: Finance inputs
-"Finance details:
-- LVR? [60%] [70%] [80%] [Fully funded]
-- Interest rate?
-- Project timeline in months?"
+5. Timeline (optional - can use defaults):
+   "Project timeline? (optional - we'll estimate if you skip)"
 
-Step 6: Other costs
-"- Selling costs (agent + marketing)? [3%] [4%] [Custom]
-- GST treatment? [Margin scheme] [Fully taxed]"
-multiple choice options appear as buttons. If user selects Margin Scheme, make the button open a chat box for the user to input what the project's cost base will be and say: "What is the project's cost base for Margin Scheme purposes?"
+AUTOMATIC ASSUMPTIONS (applied after calculation):
+- Target margin: 15% for GRV <$15M, 20% for GRV ≥$15M (auto-calculated)
+- Holding costs: QLD land tax + $5k/yr council + $1.4k/yr water
+- Finance: 7% interest, 65% LVR (unless specified)
+- Timeline: 6mo lead-in + 4mo/storey construction + 1.5mo/unit selling
 
-Step 7: Calculate
-Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
+AFTER CALCULATION:
+1. Show results concisely
+2. Say: "Assumptions based on similar projects - edit if needed."
+3. Present options:
+   "Want to adjust these numbers?
+   • Edit Inputs → opens full calculator
+   • Download PDF → save this report"
 
-CRITICAL RULES FOR QUICK FEASO:
-- NEVER assume construction costs - always ask the user
-- NEVER assume LVR, interest rate, or timeline - always ask
-- Accept user corrections immediately without questioning
-- If user provides all inputs at once, parse them and confirm before calculating
-- One question per message maximum
-- Accept variations: "fully funded" = "full fund" = "100% LVR"
-- Accept variations: "18 months" = "18mo" = "18m"
-- If user says "margin" for GST, that means margin scheme
-
-${contextSummary}
+CRITICAL RULES:
+- ACCEPT sale prices without questioning (unless obvious typo)
+- Ask questions as dot points or numbered lists - NOT run-on sentences
+- Site area = land parcel (from property data)
+- Saleable area = total unit floor area (NSA from user)
+- Keep it brief and conversational
+- One question per message
 
 DO NOT offer feasibility unprompted. Only when explicitly asked.`;
     
@@ -1092,135 +1106,55 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] Calculating quick feasibility');
   if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
+
+  const { calculateQuickFeasibility } = await import('./feasibility-calculator.js');
+
   const input = toolUse.input;
-  
-  // Get values from input
-  const numUnits = input.numUnits;
-  const saleableArea = input.saleableArea;
-  const grvTotal = input.grvTotal;
-  const landValue = input.landValue || 0;
-  const constructionCost = input.constructionCost;
-  const lvr = input.lvr;
-  const interestRate = input.interestRate;
-  const timelineMonths = input.timelineMonths;
-  const sellingCostsPercent = input.sellingCostsPercent;
-  const gstScheme = input.gstScheme || 'margin';
-  const targetMarginPercent = input.targetMarginPercent || 20;
-  const contingencyIncluded = input.contingencyIncluded !== false;
-  
-  // Add contingency if not included
-  const constructionWithContingency = contingencyIncluded 
-    ? constructionCost 
-    : constructionCost * 1.05;
-  
-  // Convert percentages to decimals
-  const lvrDecimal = lvr / 100;
-  const interestDecimal = interestRate / 100;
-  const sellingDecimal = sellingCostsPercent / 100;
-  const targetMarginDecimal = targetMarginPercent / 100;
-  
-  // Calculate GST
-  let grvExclGST;
-  if (gstScheme === 'margin' && landValue > 0) {
-    const margin = grvTotal - landValue;
-    const gstPayable = margin / 11;
-    grvExclGST = grvTotal - gstPayable;
-  } else if (gstScheme === 'fully_taxed') {
-    grvExclGST = grvTotal / 1.1;
-  } else {
-    // Default to simple /1.1 if no land value for margin calc
-    grvExclGST = grvTotal / 1.1;
-  }
-  
-  // Calculate costs
-  const sellingCosts = grvExclGST * sellingDecimal;
-  
-  // Finance costs (50% average debt outstanding)
-  const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
-  const avgDebt = totalDebt * 0.5;
-  const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-  
-  // Total costs and profit
-  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts;
-  const grossProfit = grvExclGST - totalCost;
-  const profitMargin = (grossProfit / grvExclGST) * 100;
-  
-  // Calculate residual land value at target margin
-  const targetProfit = grvExclGST * targetMarginDecimal;
-  let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
-  
-  // Iterate to account for finance costs on land
-  for (let i = 0; i < 5; i++) {
-    const residualDebt = (residualLandValue + constructionWithContingency) * lvrDecimal;
-    const residualAvgDebt = residualDebt * 0.5;
-    const residualFinanceCosts = residualAvgDebt * interestDecimal * (timelineMonths / 12);
-    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - targetProfit;
-  }
-  
-  // Determine viability
-  let viability;
-  if (profitMargin >= 25) viability = 'viable';
-  else if (profitMargin >= 20) viability = 'marginal';
-  else if (profitMargin >= 15) viability = 'challenging';
-  else viability = 'not_viable';
-  
-  if (sendProgress) sendProgress('✅ Feasibility calculated');
-  
-  toolResult = {
-    success: true,
-    feasibilityMode: 'results',
-    
-    inputs: {
-      address: input.propertyAddress || conversationContext.lastProperty,
-      projectType: input.projectType,
-      numUnits: numUnits,
-      unitMix: input.unitMix,
-      saleableArea: saleableArea,
-      landValue: landValue,
-      constructionCost: constructionWithContingency,
-      contingencyIncluded: contingencyIncluded,
-      lvr: lvr,
-      interestRate: interestRate,
-      timelineMonths: timelineMonths,
-      sellingCostsPercent: sellingCostsPercent,
-      gstScheme: gstScheme
-    },
-    
-    revenue: {
-      grvInclGST: grvTotal,
-      grvExclGST: Math.round(grvExclGST),
-      avgPricePerUnit: Math.round(grvTotal / numUnits)
-    },
-    
-    costs: {
-      land: landValue,
-      construction: Math.round(constructionWithContingency),
-      selling: Math.round(sellingCosts),
-      finance: Math.round(financeCosts),
-      total: Math.round(totalCost)
-    },
-    
-    profitability: {
-      grossProfit: Math.round(grossProfit),
-      profitMargin: Math.round(profitMargin * 10) / 10,
-      targetMargin: targetMarginPercent,
-      meetsTarget: profitMargin >= targetMarginPercent,
-      viability: viability
-    },
-    
-    residual: {
-      residualLandValue: Math.round(residualLandValue),
-      vsActualLand: landValue > 0 ? Math.round(residualLandValue - landValue) : null
-    },
-    
-    assumptions: {
-      contingency: contingencyIncluded ? 'Included in construction' : 'Added 5%',
-      financeDrawProfile: '50% average outstanding',
-      stampDuty: 'Excluded',
-      holdingCosts: 'Excluded'
-    }
+
+  // Prepare inputs for the calculator
+  const calculatorInputs = {
+    // Property data
+    address: input.address || conversationContext.lastProperty,
+    siteArea: input.siteArea || conversationContext.lastSiteArea,
+    densityCode: input.densityCode || conversationContext.lastDensity,
+    heightLimit: input.heightLimit || conversationContext.lastHeight,
+
+    // User inputs
+    purchasePrice: input.purchasePrice,
+    numUnits: input.numUnits,
+    targetSalePricePerUnit: input.targetSalePricePerUnit,
+    saleableArea: input.saleableArea,
+    constructionCost: input.constructionCost,
+
+    // Optional inputs with smart defaults
+    contingencyPercent: input.contingencyPercent,
+    professionalFeesPercent: input.professionalFeesPercent,
+    statutoryFeesPercent: input.statutoryFeesPercent,
+    gstScheme: input.gstScheme || 'margin',
+    costBase: input.costBase,
+    interestRate: input.interestRate,
+    loanLVR: input.loanLVR,
+    leadInMonths: input.leadInMonths,
+    constructionMonths: input.constructionMonths,
+    sellingMonths: input.sellingMonths,
   };
+
+  console.log('[CLAUDE] Calling feasibility calculator with inputs:', calculatorInputs);
+
+  try {
+    toolResult = calculateQuickFeasibility(calculatorInputs);
+    toolResult.feasibilityMode = 'quick_results';
+
+    if (sendProgress) sendProgress('✅ Feasibility calculated');
+    console.log('[CLAUDE] Feasibility calculation successful');
+  } catch (calcError) {
+    console.error('[CLAUDE] Feasibility calculation error:', calcError);
+    toolResult = {
+      success: false,
+      error: calcError.message,
+      errorType: 'CALCULATION_ERROR'
+    };
+  }
 }
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({

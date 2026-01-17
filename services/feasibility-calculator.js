@@ -269,7 +269,7 @@ export function calculateQuickFeasibility(inputs) {
   return {
     success: true,
     type: 'quick',
-    
+
     // Input summary
     inputs: {
       address,
@@ -280,11 +280,10 @@ export function calculateQuickFeasibility(inputs) {
       numUnits: units,
       purchasePrice: purchase,
       targetSalePricePerUnit: salePrice,
-      constructionCostPerSqm: buildCostSqm,
-      avgUnitSize: unitSize,
+      saleableArea: totalSaleableArea,
       targetMarginPercent: targetMargin,
     },
-    
+
     // Capacity analysis
     capacity: {
       maxUnits: capacity.max,
@@ -292,43 +291,45 @@ export function calculateQuickFeasibility(inputs) {
       proposedUnits: units,
       utilizationPercent: Math.round((units / capacity.max) * 100),
       estimatedStoreys,
-      totalGFA,
+      totalSaleableArea,
     },
-    
+
     // Revenue
     revenue: {
       grvInclGST,
       grvExclGST,
       gstPayable,
       avgPricePerUnit: salePrice,
-      pricePerSqm: Math.round(salePrice / unitSize),
+      pricePerSqm: totalSaleableArea > 0 ? Math.round(grvInclGST / totalSaleableArea) : 0,
     },
-    
+
     // Costs breakdown
     costs: {
       landValue: purchase,
       stampDuty,
       acquisitionTotal: totalAcquisition,
-      constructionCost,
+      constructionCost: baseConstructionCost,
       contingency,
       professionalFees,
       statutoryFees,
-      pmFees,
       constructionTotal: totalConstructionCosts,
       holdingCosts,
+      landTaxYearly,
+      councilRatesYearly,
+      waterRatesYearly,
       sellingCosts: totalSellingCosts,
       financeCosts: totalFinanceCosts,
       totalProjectCost,
     },
-    
+
     // Timeline
     timeline: {
-      leadInMonths,
-      constructionMonths,
-      sellingMonths,
+      leadInMonths: leadIn,
+      constructionMonths: construction,
+      sellingMonths: selling,
       totalMonths,
     },
-    
+
     // Profitability
     profitability: {
       grossProfit,
@@ -338,7 +339,7 @@ export function calculateQuickFeasibility(inputs) {
       meetsTarget: profitMargin >= targetMargin,
       viability,
     },
-    
+
     // Residual analysis
     residual: {
       residualLandValue: Math.round(residualLandValue),
@@ -347,11 +348,72 @@ export function calculateQuickFeasibility(inputs) {
       vsActualLand: Math.round(residualLandValue - purchase),
       landIsFairValue: residualLandValue >= purchase,
     },
-    
+
     // Assumptions used
     assumptions: {
-      ...QUICK_DEFAULTS,
-      note: 'Quick feasibility uses industry-standard assumptions. Use detailed analysis for accurate project-specific calculations.',
+      targetMargin: `${targetMargin}% (auto: ${grvInclGST >= 15000000 ? '≥$15M GRV' : '<$15M GRV'})`,
+      contingencyPercent: contingencyPct,
+      professionalFeesPercent: professionalFeesPct,
+      statutoryFeesPercent: statutoryFeesPct,
+      agentFeesPercent: QUICK_DEFAULTS.agentFeesPercent,
+      marketingPercent: QUICK_DEFAULTS.marketingPercent,
+      legalSellingPercent: QUICK_DEFAULTS.legalSellingPercent,
+      interestRate: rate,
+      loanLVR: lvr,
+      councilRatesYearly,
+      waterRatesYearly,
+      landTaxYearly,
+      note: 'Assumptions based on similar projects - edit if needed.',
+    },
+
+    // Complete data for calculator pre-fill
+    calculatorPreFill: {
+      property: {
+        address: address || '',
+        siteArea: site,
+        densityCode: density,
+        heightLimit: height.metres,
+      },
+      project: {
+        numUnits: units,
+        saleableArea: totalSaleableArea,
+        grvInclGST,
+      },
+      acquisition: {
+        landValue: purchase,
+        stampDuty,
+        legalFees: legalAcquisition,
+        gstScheme,
+        costBase: gstScheme === 'margin' ? (parseFloat(costBase) || purchase) : purchase,
+      },
+      construction: {
+        buildCost: baseConstructionCost,
+        contingencyPercent: contingencyPct,
+        professionalFeesPercent: professionalFeesPct,
+        statutoryFeesPercent: statutoryFeesPct,
+      },
+      holding: {
+        landTaxYearly,
+        councilRates: councilRatesYearly,
+        waterRates: waterRatesYearly,
+      },
+      selling: {
+        agentPercent: QUICK_DEFAULTS.agentFeesPercent,
+        marketingPercent: QUICK_DEFAULTS.marketingPercent,
+        legalPercent: QUICK_DEFAULTS.legalSellingPercent,
+      },
+      finance: {
+        interestRate: rate,
+        lvr: lvr,
+      },
+      timeline: {
+        leadInMonths: leadIn,
+        constructionMonths: construction,
+        sellingMonths: selling,
+      },
+      target: {
+        marginPercent: targetMargin,
+      },
     },
   };
 }
