@@ -22,7 +22,6 @@ const QUICK_DEFAULTS = {
   contingencyPercent: 5,
   professionalFeesPercent: 8,
   statutoryFeesPercent: 2,
-  projectManagementPercent: 3,
   agentFeesPercent: 2.5,
   marketingPercent: 1.5,
   legalSellingPercent: 0.5,
@@ -31,7 +30,8 @@ const QUICK_DEFAULTS = {
   leadInMonths: 6,
   constructionMonthsPerStorey: 4,
   sellingMonthsPerUnit: 1.5,
-  stampDutyRate: 0.055, // Approximate QLD rate for investment
+  councilRatesYearly: 5000,
+  waterRatesYearly: 1400,
 };
 
 /**
@@ -43,6 +43,23 @@ function calculateStampDutyQLD(price) {
   if (price <= 540000) return 1125 + (price - 75000) * 0.035;
   if (price <= 1000000) return 17400 + (price - 540000) * 0.045;
   return 38100 + (price - 1000000) * 0.0575;
+}
+
+/**
+ * Calculate QLD land tax (Companies/Trusts)
+ */
+function calculateLandTaxQLD(landValue) {
+  if (landValue < 350000) return 0;
+  if (landValue < 2100000) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue < 5000000) return 31200 + (landValue - 2100000) * 0.015;
+  return 74700 + (landValue - 5000000) * 0.020;
+}
+
+/**
+ * Determine target margin based on GRV
+ */
+function getTargetMargin(grvTotal) {
+  return grvTotal >= 15000000 ? 20 : 15;
 }
 
 /**
@@ -126,19 +143,28 @@ export function calculateQuickFeasibility(inputs) {
     densityCode,
     heightLimit,
     address,
-    
+
     // From user (required)
     purchasePrice,
     numUnits,
     targetSalePricePerUnit,
-    
+    saleableArea, // Total unit floor area (NSA)
+
     // From user (optional with defaults)
     developmentType = 'apartments',
-    constructionCostPerSqm = 4000,
-    avgUnitSize = 85,
-    targetMarginPercent = 20,
+    constructionCost, // Total construction cost
+    contingencyPercent,
+    professionalFeesPercent,
+    statutoryFeesPercent,
+    gstScheme = 'margin',
+    costBase, // For margin scheme
+    interestRate,
+    loanLVR,
+    leadInMonths,
+    constructionMonths,
+    sellingMonths,
   } = inputs;
-  
+
   // Parse inputs
   const site = parseSiteArea(siteArea);
   const density = extractDensityCode(densityCode);
@@ -146,77 +172,93 @@ export function calculateQuickFeasibility(inputs) {
   const purchase = parseFloat(purchasePrice) || 0;
   const units = parseInt(numUnits) || 1;
   const salePrice = parseFloat(targetSalePricePerUnit) || 0;
-  const buildCostSqm = parseFloat(constructionCostPerSqm) || 4000;
-  const unitSize = parseFloat(avgUnitSize) || 85;
-  const targetMargin = parseFloat(targetMarginPercent) || 20;
+  const totalSaleableArea = parseFloat(saleableArea) || 0;
+
+  // Calculate GRV and determine target margin automatically
+  const grvInclGST = units * salePrice;
+  const targetMargin = getTargetMargin(grvInclGST);
   
   // Calculate capacity
   const capacity = calculateMaxCapacity(site, density);
-  
+
   // Estimate storeys based on units and site
   const footprintPerUnit = 80; // Approximate
   const maxFootprint = site * 0.5; // 50% site cover
   const unitsPerFloor = Math.max(1, Math.floor(maxFootprint / footprintPerUnit));
   const estimatedStoreys = Math.min(height.storeys, Math.ceil(units / unitsPerFloor));
-  
-  // Calculate GFA and construction cost
-  const totalGFA = units * unitSize;
-  const constructionCost = totalGFA * buildCostSqm;
-  
-  // Apply default percentages
-  const contingency = constructionCost * (QUICK_DEFAULTS.contingencyPercent / 100);
-  const professionalFees = constructionCost * (QUICK_DEFAULTS.professionalFeesPercent / 100);
-  const statutoryFees = constructionCost * (QUICK_DEFAULTS.statutoryFeesPercent / 100);
-  const pmFees = constructionCost * (QUICK_DEFAULTS.projectManagementPercent / 100);
-  
-  const totalConstructionCosts = constructionCost + contingency + professionalFees + statutoryFees + pmFees;
-  
+
+  // Construction costs with percentages
+  const baseConstructionCost = parseFloat(constructionCost) || 0;
+  const contingencyPct = parseFloat(contingencyPercent) || QUICK_DEFAULTS.contingencyPercent;
+  const professionalFeesPct = parseFloat(professionalFeesPercent) || QUICK_DEFAULTS.professionalFeesPercent;
+  const statutoryFeesPct = parseFloat(statutoryFeesPercent) || QUICK_DEFAULTS.statutoryFeesPercent;
+
+  const contingency = baseConstructionCost * (contingencyPct / 100);
+  const professionalFees = baseConstructionCost * (professionalFeesPct / 100);
+  const statutoryFees = baseConstructionCost * (statutoryFeesPct / 100);
+
+  const totalConstructionCosts = baseConstructionCost + contingency + professionalFees + statutoryFees;
+
   // Acquisition costs
   const stampDuty = calculateStampDutyQLD(purchase);
   const legalAcquisition = 5000; // Default legal costs
-  const totalAcquisition = stampDuty + legalAcquisition;
-  
-  // Timeline estimates
-  const leadInMonths = QUICK_DEFAULTS.leadInMonths;
-  const constructionMonths = estimatedStoreys * QUICK_DEFAULTS.constructionMonthsPerStorey;
-  const sellingMonths = Math.ceil(units * QUICK_DEFAULTS.sellingMonthsPerUnit);
-  const totalMonths = leadInMonths + constructionMonths + sellingMonths;
-  
-  // Holding costs (estimated)
-  const annualHoldingRate = 0.02; // 2% of land value per year
-  const holdingCosts = purchase * annualHoldingRate * (totalMonths / 12);
-  
-  // GRV calculations
-  const grvInclGST = units * salePrice;
-  const grvExclGST = grvInclGST / 1.1;
-  const gstPayable = grvInclGST - grvExclGST;
-  
+  const totalAcquisition = purchase + stampDuty + legalAcquisition;
+
+  // Timeline
+  const leadIn = parseFloat(leadInMonths) || QUICK_DEFAULTS.leadInMonths;
+  const construction = parseFloat(constructionMonths) || (estimatedStoreys * QUICK_DEFAULTS.constructionMonthsPerStorey);
+  const selling = parseFloat(sellingMonths) || Math.ceil(units * QUICK_DEFAULTS.sellingMonthsPerUnit);
+  const totalMonths = leadIn + construction + selling;
+
+  // Holding costs - QLD land tax + council rates + water rates
+  const landTaxYearly = calculateLandTaxQLD(purchase);
+  const councilRatesYearly = QUICK_DEFAULTS.councilRatesYearly;
+  const waterRatesYearly = QUICK_DEFAULTS.waterRatesYearly;
+  const totalHoldingYearly = landTaxYearly + councilRatesYearly + waterRatesYearly;
+  const holdingCosts = totalHoldingYearly * (totalMonths / 12);
+
+  // GRV calculations with GST
+  let grvExclGST;
+  let gstPayable;
+
+  if (gstScheme === 'margin') {
+    const base = parseFloat(costBase) || purchase;
+    const margin = grvInclGST - base;
+    gstPayable = margin / 11;
+    grvExclGST = grvInclGST - gstPayable;
+  } else {
+    grvExclGST = grvInclGST / 1.1;
+    gstPayable = grvInclGST - grvExclGST;
+  }
+
   // Selling costs
   const agentFees = grvExclGST * (QUICK_DEFAULTS.agentFeesPercent / 100);
   const marketing = grvExclGST * (QUICK_DEFAULTS.marketingPercent / 100);
   const legalSelling = grvExclGST * (QUICK_DEFAULTS.legalSellingPercent / 100);
   const totalSellingCosts = agentFees + marketing + legalSelling;
-  
+
   // Finance costs
-  const totalDevCosts = totalConstructionCosts + totalAcquisition + holdingCosts + totalSellingCosts;
-  const avgDebt = (purchase + totalDevCosts) * (QUICK_DEFAULTS.loanLVR / 100);
-  const interestCost = avgDebt * (QUICK_DEFAULTS.interestRate / 100) * (totalMonths / 12);
-  const loanFees = avgDebt * 0.01; // 1% establishment
+  const rate = parseFloat(interestRate) || QUICK_DEFAULTS.interestRate;
+  const lvr = parseFloat(loanLVR) || QUICK_DEFAULTS.loanLVR;
+  const totalDevCosts = totalConstructionCosts + holdingCosts + totalSellingCosts;
+  const avgDebt = (totalAcquisition + totalDevCosts) * (lvr / 100) * 0.5; // 50% average draw
+  const interestCost = avgDebt * (rate / 100) * (totalMonths / 12);
+  const loanFees = avgDebt * 2 * 0.01; // 1% establishment on total debt
   const totalFinanceCosts = interestCost + loanFees;
-  
+
   // Total project cost
-  const totalProjectCost = purchase + totalDevCosts + totalFinanceCosts;
-  
+  const totalProjectCost = totalAcquisition + totalDevCosts + totalFinanceCosts;
+
   // Profit calculations
   const grossProfit = grvExclGST - totalProjectCost;
   const profitMargin = (grossProfit / grvExclGST) * 100;
   const returnOnCost = (grossProfit / totalProjectCost) * 100;
-  
+
   // Residual land value calculation
   const targetProfitAmount = grvExclGST * (targetMargin / 100);
-  const residualLandValue = grvExclGST - totalDevCosts - totalFinanceCosts - targetProfitAmount;
+  const residualLandValue = grvExclGST - totalConstructionCosts - holdingCosts - totalSellingCosts - totalFinanceCosts - targetProfitAmount;
   const residualPerSqm = residualLandValue / site;
-  
+
   // Viability assessment
   let viability = 'marginal';
   if (profitMargin >= targetMargin) viability = 'viable';
