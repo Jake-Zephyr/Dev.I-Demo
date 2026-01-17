@@ -458,6 +458,24 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
         }
       },
       {
+        name: 'get_da_decision_notice',
+        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available).',
+        input_schema: {
+          type: 'object',
+          properties: {
+            application_number: {
+              type: 'string',
+              description: 'DA application number (e.g., "MIN/2024/216", "MCU/2019/386"). Must be from a previous DA search result.'
+            },
+            address: {
+              type: 'string',
+              description: 'Property address for context (optional but helpful for user confirmation)'
+            }
+          },
+          required: ['application_number']
+        }
+      },
+      {
         name: 'start_feasibility',
         description: 'Start a feasibility analysis for a property. Use when user explicitly asks to "run a feaso", "do a feasibility", "check the numbers", or similar.',
         input_schema: {
@@ -972,14 +990,14 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
       // Handle DA search tool - WITH CONTEXT AWARENESS
       else if (toolUse.name === 'search_development_applications') {
         if (sendProgress) sendProgress('🔍 Searching development applications...');
-        
+
         // Build full address using context if suburb missing
         let searchAddress = toolUse.input.address;
         const inputSuburb = toolUse.input.suburb;
-        
+
         // Check if address already has suburb
         const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami)/i.test(searchAddress);
-        
+
         if (!hasSuburb) {
           // Try to add suburb from input or context
           const suburb = inputSuburb || conversationContext.lastSuburb;
@@ -988,23 +1006,23 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
             console.log(`[CLAUDE] Added suburb from context: ${searchAddress}`);
           }
         }
-        
+
         console.log('[CLAUDE] Searching DAs for:', searchAddress);
-        
+
         try {
           const { scrapeGoldCoastDAs } = await import('./pdonline-scraper.js');
           const daResult = await scrapeGoldCoastDAs(
-            searchAddress, 
+            searchAddress,
             toolUse.input.months_back || 12
           );
-          
+
           console.log(`[CLAUDE] Found ${daResult.count} DAs`);
           if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
-          
+
           toolResult = daResult;
         } catch (daError) {
           console.error('[CLAUDE] DA search failed:', daError.message);
-          
+
           toolResult = {
             success: false,
             count: 0,
@@ -1012,11 +1030,108 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
             error: daError.message,
             errorType: 'DA_SEARCH_FAILED'
           };
-          
+
           if (sendProgress) sendProgress('⚠️ DA search encountered an issue');
         }
       }
-      
+
+      // Handle DA decision notice download tool
+      else if (toolUse.name === 'get_da_decision_notice') {
+        if (sendProgress) sendProgress('📄 Downloading decision notice...');
+
+        const appNumber = toolUse.input.application_number;
+        console.log('[CLAUDE] Downloading decision notice for:', appNumber);
+
+        try {
+          const { getDecisionNotice } = await import('./pdonline-documents.js');
+          const docResult = await getDecisionNotice(appNumber, '/tmp');
+
+          if (docResult.success) {
+            console.log(`[CLAUDE] Downloaded decision notice: ${docResult.filename}`);
+            if (sendProgress) sendProgress(docResult.isSigned ? '✅ Analyzing signed decision notice...' : '⚠️ Analyzing unsigned decision notice...');
+
+            // Read PDF for Claude to analyze
+            const fs = await import('fs');
+            const pdfBuffer = fs.readFileSync(docResult.filePath);
+            const base64Pdf = pdfBuffer.toString('base64');
+
+            // Analyze PDF with Claude
+            console.log('[CLAUDE] Analyzing decision notice with Claude...');
+            try {
+              const analysisResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 2000,
+                messages: [{
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'document',
+                      source: {
+                        type: 'base64',
+                        media_type: 'application/pdf',
+                        data: base64Pdf
+                      }
+                    },
+                    {
+                      type: 'text',
+                      text: 'summarise the more pertinent conditions within this decision notice'
+                    }
+                  ]
+                }]
+              });
+
+              const summary = analysisResponse.content.find(c => c.type === 'text')?.text || 'Could not analyze document';
+              console.log('[CLAUDE] ✅ Analysis complete');
+              if (sendProgress) sendProgress('✅ Analysis complete');
+
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                is_signed: docResult.isSigned,
+                document_name: docResult.documentName,
+                warning: docResult.warning,
+                summary: summary  // The analyzed summary
+              };
+            } catch (analysisError) {
+              console.error('[CLAUDE] PDF analysis failed:', analysisError.message);
+              // Still return success with file info, but note analysis failed
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                is_signed: docResult.isSigned,
+                document_name: docResult.documentName,
+                warning: docResult.warning,
+                summary: 'PDF analysis failed - document downloaded but could not be analyzed',
+                analysis_error: analysisError.message
+              };
+            }
+          } else {
+            console.error('[CLAUDE] Decision notice download failed:', docResult.error);
+            toolResult = {
+              success: false,
+              error: docResult.error,
+              application_number: appNumber
+            };
+            if (sendProgress) sendProgress('⚠️ Could not find decision notice');
+          }
+        } catch (docError) {
+          console.error('[CLAUDE] Decision notice download error:', docError.message);
+          toolResult = {
+            success: false,
+            error: docError.message,
+            errorType: 'DOCUMENT_DOWNLOAD_FAILED',
+            application_number: appNumber
+          };
+          if (sendProgress) sendProgress('⚠️ Document download failed');
+        }
+      }
+
       // Handle clarification tool
       else if (toolUse.name === 'ask_clarification') {
         console.log('[CLAUDE] Clarification needed:', toolUse.input);
