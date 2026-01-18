@@ -74,9 +74,12 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     console.log('[PDONLINE-DOCS] ✅ Opened application detail');
 
     // STEP 4: Access documents iframe
-    const iframeElement = await page.waitForSelector('iframe.resp-iframe', { timeout: 10000 });
+    const iframeElement = await page.waitForSelector('iframe.resp-iframe', { timeout: 15000 });
     const iframe = await iframeElement.contentFrame();
-    await iframe.waitForSelector('table.dataTable', { timeout: 5000 });
+
+    // Wait longer for documents table - iframe loads external URL which can be slow
+    console.log('[PDONLINE-DOCS] Waiting for documents table to load...');
+    await iframe.waitForSelector('table.dataTable', { timeout: 20000 });
     console.log('[PDONLINE-DOCS] ✅ Documents loaded');
 
     // STEP 5: Search all pages for decision notice
