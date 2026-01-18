@@ -243,7 +243,7 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Download
+    // Download - for Browserbase CDP, we need to get the buffer and write manually
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       decisionLink.click()
@@ -254,7 +254,23 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
     const filePath = path.join(outputDir, filename);
 
-    await download.saveAs(filePath);
+    // Ensure output directory exists
+    if (!fs.existsSync(outputDir)) {
+      console.log(`[PDONLINE-DOCS] Creating output directory: ${outputDir}`);
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // For CDP connections (Browserbase), get the file as a stream and write it
+    console.log('[PDONLINE-DOCS] Reading download stream...');
+    const stream = await download.createReadStream();
+    const writeStream = fs.createWriteStream(filePath);
+
+    await new Promise((resolve, reject) => {
+      stream.pipe(writeStream);
+      stream.on('end', resolve);
+      stream.on('error', reject);
+      writeStream.on('error', reject);
+    });
 
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
