@@ -52,9 +52,10 @@ function extractStreetName(address) {
   
   // Remove suburb and postcode from end
   cleaned = cleaned.replace(/,?\s*(southport|surfers paradise|broadbeach|mermaid waters|palm beach|burleigh|gold coast|qld|queensland|\d{4}).*$/i, '');
-  
+
   // Try to extract just the street name (without number)
-  const match = cleaned.match(/^\d+[a-z]?\-?\d*\s+(.+)/i);
+  // Updated to properly handle hyphenated numbers like "1048-1050"
+  const match = cleaned.match(/^\d+[a-z]?(?:-\d+)?\s+(.+)/i);
   if (match) {
     return match[1].trim();
   }
@@ -64,10 +65,13 @@ function extractStreetName(address) {
 
 /**
  * Extract street number from an address
+ * Supports hyphenated numbers like "1048-1050" for properties spanning multiple frontages
  */
 function extractStreetNumber(address) {
   if (!address) return '';
-  const match = address.match(/^(\d+[a-z]?)/i);
+  // Match: digits + optional letter + optional hyphen and more digits
+  // Examples: "1048", "123a", "1048-1050"
+  const match = address.match(/^(\d+[a-z]?(?:-\d+)?)/i);
   return match ? match[1].toLowerCase() : '';
 }
 
@@ -134,7 +138,7 @@ function detectQueryType(query) {
  */
 async function getCadastreByLotPlan(lotplan) {
   console.log(`[API] Querying cadastre by lot/plan: ${lotplan}`);
-  
+
   const url = `${SERVICES.CADASTRE}/query`;
   const params = new URLSearchParams({
     f: 'json',
@@ -143,16 +147,57 @@ async function getCadastreByLotPlan(lotplan) {
     outSR: '28356',
     returnGeometry: 'true'
   });
-  
+
   const resp = await fetch(`${url}?${params}`);
   const data = await resp.json();
-  
+
   if (data.features?.[0]) {
     console.log(`[API] ✓ Found lot/plan: ${lotplan}`);
     return data.features[0];
   }
-  
+
   throw new Error(`Lot/plan ${lotplan} not found in cadastre`);
+}
+
+/**
+ * Get ALL lots within a strata plan (for calculating total site area)
+ * For a GTP or BUP scheme, this returns lot 0, 1, 2, 3, etc. with their individual areas
+ */
+async function getAllLotsInPlan(planNumber) {
+  console.log(`[API] Querying all lots in plan: ${planNumber}`);
+
+  const url = `${SERVICES.CADASTRE}/query`;
+  // Query for all lots with this plan number (e.g., all lots in BUP12345 or GTP67890)
+  // The LOTPLAN format is like "0BUP12345", "1BUP12345", "2BUP12345", etc.
+  const params = new URLSearchParams({
+    f: 'json',
+    where: `upper(LOTPLAN) LIKE '%${planNumber.toUpperCase()}'`,
+    outFields: 'LOTPLAN,AREA_SIZE_SQ_M,NUMBEROFUNITS',
+    outSR: '28356',
+    returnGeometry: 'false'
+  });
+
+  const resp = await fetch(`${url}?${params}`);
+  const data = await resp.json();
+
+  if (data.features && data.features.length > 0) {
+    // Sort by lot number (lot 0 first, then 1, 2, 3, etc.)
+    const lots = data.features.map(f => ({
+      lotplan: f.attributes.LOTPLAN,
+      area: f.attributes.AREA_SIZE_SQ_M || 0,
+      numberOfUnits: f.attributes.NUMBEROFUNITS || null
+    })).sort((a, b) => {
+      const lotNumA = parseInt(a.lotplan.match(/^(\d+)/)?.[1] || '999');
+      const lotNumB = parseInt(b.lotplan.match(/^(\d+)/)?.[1] || '999');
+      return lotNumA - lotNumB;
+    });
+
+    console.log(`[API] ✓ Found ${lots.length} lots in plan ${planNumber}`);
+    return lots;
+  }
+
+  console.log(`[API] No lots found in plan ${planNumber}`);
+  return [];
 }
 
 /**
@@ -865,14 +910,55 @@ export async function scrapeProperty(query, sendProgress = null) {
     const isParentLot = isStrata && lotNumber === 0;  // Lot 0 = parent/common property
     const isUnitLot = isStrata && lotNumber > 0;      // Lot 1+ = individual units
     
+    // Calculate total site area for strata schemes (sum all lots)
+    let totalSiteArea = cadastre.AREA_SIZE_SQ_M;
+    let areaBreakdown = null;
+
     if (isStrata) {
       if (isParentLot && numberOfUnits > 1) {
         console.log(`[API] This is the PARENT SITE (lot 0) of a ${numberOfUnits}-unit strata scheme`);
+
+        // Extract plan number from lotplan (e.g., "BUP12345" from "0BUP12345")
+        const planMatch = returnedLotplan.match(/^(\d+)([A-Z]{2,4}\d+)$/i);
+        if (planMatch) {
+          const planNumber = planMatch[2]; // e.g., "BUP12345" or "GTP67890"
+
+          if (sendProgress) sendProgress('📊 Calculating total strata area...');
+
+          try {
+            // Get all lots in this strata plan
+            const allLots = await getAllLotsInPlan(planNumber);
+
+            if (allLots && allLots.length > 0) {
+              // Calculate total area (sum of all lots including lot 0)
+              totalSiteArea = allLots.reduce((sum, lot) => sum + lot.area, 0);
+
+              // Create breakdown showing each lot's area
+              areaBreakdown = allLots.map(lot => {
+                const lotNum = parseInt(lot.lotplan.match(/^(\d+)/)?.[1] || '0');
+                const areaRounded = Math.round(lot.area);
+
+                if (lotNum === 0) {
+                  return `Lot 0: ${areaRounded}sqm (common property)`;
+                } else {
+                  return `Lot ${lotNum}: ${areaRounded}sqm`;
+                }
+              });
+
+              console.log(`[API] Calculated total strata area: ${Math.round(totalSiteArea)}sqm from ${allLots.length} lots`);
+              console.log(`[API] Breakdown: ${areaBreakdown.join(', ')}`);
+            } else {
+              console.log(`[API] Could not retrieve all lots for plan ${planNumber}, using lot 0 area only`);
+            }
+          } catch (error) {
+            console.log(`[API] Error calculating strata area: ${error.message}, using lot 0 area only`);
+          }
+        }
       } else if (isUnitLot) {
         console.log(`[API] This is UNIT ${lotNumber} within a strata scheme`);
       }
     }
-    
+
     if (numberOfUnits > 1) {
       console.log(`[API] Strata title with ${numberOfUnits} units registered`);
     }
@@ -888,7 +974,8 @@ export async function scrapeProperty(query, sendProgress = null) {
         zoneCode: density,
         density: density,
         height: height?.['Height (m)'] || null,
-        area: cadastre.AREA_SIZE_SQ_M ? `${Math.round(cadastre.AREA_SIZE_SQ_M)}sqm` : null,
+        area: totalSiteArea ? `${Math.round(totalSiteArea)}sqm` : null,
+        areaBreakdown: areaBreakdown,          // Array of lot area strings (for strata)
         overlays: overlayNames,
         // Strata information
         isStrata: isStrata,                    // Is this a strata scheme (BUP/GTP)?
@@ -896,9 +983,9 @@ export async function scrapeProperty(query, sendProgress = null) {
         isUnitLot: isUnitLot,                  // Is this an individual unit?
         numberOfUnits: numberOfUnits,          // How many units in this scheme
         unitNumber: isUnitLot ? lotNumber : null,  // Which unit number (if unit lot)
-        strataNote: isParentLot && numberOfUnits > 1 
+        strataNote: isParentLot && numberOfUnits > 1
           ? `This is the parent site containing ${numberOfUnits} strata units`
-          : isUnitLot 
+          : isUnitLot
           ? `This is unit ${lotNumber} within a strata complex`
           : null
       },
@@ -908,7 +995,7 @@ export async function scrapeProperty(query, sendProgress = null) {
         overlayRestrictions: null
       },
       scrapedAt: new Date().toISOString(),
-      apiVersion: '2.5-strata-clarity',
+      apiVersion: '2.6-strata-total-area',
       timeTaken: elapsed
     };
     
