@@ -254,6 +254,12 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
     const filePath = path.join(outputDir, filename);
 
+    // Ensure output directory exists
+    if (!fs.existsSync(outputDir)) {
+      console.log(`[PDONLINE-DOCS] Creating output directory: ${outputDir}`);
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
     await download.saveAs(filePath);
 
     const stats = fs.statSync(filePath);
