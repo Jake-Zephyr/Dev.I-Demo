@@ -243,9 +243,35 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Download - Use CDP protocol directly for Browserbase
-    console.log('[PDONLINE-DOCS] Setting up CDP download behavior...');
+    // Get the download URL from the link
+    console.log('[PDONLINE-DOCS] Getting download URL...');
+    const downloadUrl = await decisionLink.getAttribute('href');
+    console.log('[PDONLINE-DOCS] Download URL:', downloadUrl);
 
+    // Build full URL if it's relative
+    const baseUrl = page.url();
+    const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : new URL(downloadUrl, baseUrl).toString();
+    console.log('[PDONLINE-DOCS] Full URL:', fullUrl);
+
+    // Use page.evaluate with fetch to download the file as base64
+    console.log('[PDONLINE-DOCS] Fetching file content from remote browser...');
+    const base64Content = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // Remove the data:application/pdf;base64, prefix
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.readAsDataURL(blob);
+      });
+    }, fullUrl);
+
+    console.log('[PDONLINE-DOCS] Received base64 content, length:', base64Content.length);
+
+    // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
     const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
     const filePath = path.join(outputDir, filename);
@@ -256,62 +282,10 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // Get CDP session and enable download behavior
-    const client = await context.newCDPSession(page);
-    await client.send('Browser.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: outputDir,
-      eventsEnabled: true
-    });
-
-    console.log('[PDONLINE-DOCS] CDP download enabled, clicking link...');
-
-    let downloadGuid = null;
-    let downloadComplete = false;
-
-    // Listen for download progress
-    client.on('Browser.downloadProgress', (event) => {
-      console.log(`[PDONLINE-DOCS] Download progress: ${event.state} - ${event.receivedBytes || 0} bytes`);
-      downloadGuid = event.guid;
-      if (event.state === 'completed') {
-        downloadComplete = true;
-      }
-    });
-
-    // Click the download link
-    await decisionLink.click();
-
-    // Wait for download to complete (timeout after 30 seconds)
-    console.log('[PDONLINE-DOCS] Waiting for download to complete...');
-    const maxWaitTime = 30000;
-    const startTime = Date.now();
-    while (!downloadComplete && (Date.now() - startTime) < maxWaitTime) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    if (!downloadComplete) {
-      throw new Error('Download did not complete within 30 seconds');
-    }
-
-    console.log('[PDONLINE-DOCS] Download completed, checking file...');
-
-    // Find the downloaded file (CDP may name it differently)
-    const files = fs.readdirSync(outputDir);
-    console.log('[PDONLINE-DOCS] Files in output dir:', files);
-
-    // Find the PDF file
-    const pdfFile = files.find(f => f.endsWith('.pdf'));
-    if (!pdfFile) {
-      throw new Error('Downloaded PDF file not found in output directory');
-    }
-
-    const downloadedPath = path.join(outputDir, pdfFile);
-
-    // Rename to our desired filename if different
-    if (pdfFile !== filename) {
-      console.log(`[PDONLINE-DOCS] Renaming ${pdfFile} to ${filename}`);
-      fs.renameSync(downloadedPath, filePath);
-    }
+    // Convert base64 to buffer and write to file
+    console.log('[PDONLINE-DOCS] Writing file to disk...');
+    const pdfBuffer = Buffer.from(base64Content, 'base64');
+    fs.writeFileSync(filePath, pdfBuffer);
 
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
