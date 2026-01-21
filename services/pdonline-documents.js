@@ -243,14 +243,33 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Download - for Browserbase CDP, we need to get the buffer and write manually
-    const [download] = await Promise.all([
-      page.waitForEvent('download'),
-      decisionLink.click()
-    ]);
+    // Get the download URL from the link
+    console.log('[PDONLINE-DOCS] Getting download URL...');
+    const downloadUrl = await decisionLink.getAttribute('href');
+    console.log('[PDONLINE-DOCS] Download URL:', downloadUrl);
 
-    console.log('[PDONLINE-DOCS] Download event received');
-    console.log('[PDONLINE-DOCS] Download suggested filename:', await download.suggestedFilename());
+    // Build full URL if it's relative
+    const baseUrl = page.url();
+    const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : new URL(downloadUrl, baseUrl).toString();
+    console.log('[PDONLINE-DOCS] Full URL:', fullUrl);
+
+    // Use page.evaluate with fetch to download the file as base64
+    console.log('[PDONLINE-DOCS] Fetching file content from remote browser...');
+    const base64Content = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // Remove the data:application/pdf;base64, prefix
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.readAsDataURL(blob);
+      });
+    }, fullUrl);
+
+    console.log('[PDONLINE-DOCS] Received base64 content, length:', base64Content.length);
 
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
@@ -263,38 +282,11 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    console.log('[PDONLINE-DOCS] Output path:', filePath);
+    // Convert base64 to buffer and write to file
+    console.log('[PDONLINE-DOCS] Writing file to disk...');
+    const pdfBuffer = Buffer.from(base64Content, 'base64');
+    fs.writeFileSync(filePath, pdfBuffer);
 
-    // For CDP connections (Browserbase), get the file as a stream and write it
-    console.log('[PDONLINE-DOCS] Creating read stream...');
-    const stream = await download.createReadStream();
-    console.log('[PDONLINE-DOCS] Stream created, piping to file...');
-
-    const writeStream = fs.createWriteStream(filePath);
-
-    let bytesWritten = 0;
-    stream.on('data', (chunk) => {
-      bytesWritten += chunk.length;
-      console.log(`[PDONLINE-DOCS] Received ${chunk.length} bytes (total: ${bytesWritten})`);
-    });
-
-    await new Promise((resolve, reject) => {
-      stream.pipe(writeStream);
-      writeStream.on('finish', () => {
-        console.log(`[PDONLINE-DOCS] Write stream finished. Total bytes written: ${bytesWritten}`);
-        resolve();
-      });
-      stream.on('error', (err) => {
-        console.error('[PDONLINE-DOCS] Stream error:', err);
-        reject(err);
-      });
-      writeStream.on('error', (err) => {
-        console.error('[PDONLINE-DOCS] Write stream error:', err);
-        reject(err);
-      });
-    });
-
-    console.log('[PDONLINE-DOCS] Checking file on disk...');
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
     console.log('[PDONLINE-DOCS] File size on disk:', fileSizeKB, 'KB');
