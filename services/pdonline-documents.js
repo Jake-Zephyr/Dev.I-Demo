@@ -243,17 +243,8 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Use CDP Fetch domain to intercept the download and get the actual PDF content
-    console.log('[PDONLINE-DOCS] Setting up CDP to intercept download...');
-
-    const client = await context.newCDPSession(page);
-
-    // Enable Fetch domain to intercept requests
-    await client.send('Fetch.enable', {
-      patterns: [{ urlPattern: '*', requestStage: 'Response' }]
-    });
-
-    console.log('[PDONLINE-DOCS] CDP Fetch enabled');
+    // Listen for response events to capture the PDF
+    console.log('[PDONLINE-DOCS] Setting up response listener...');
 
     let pdfBase64 = null;
     let interceptResolve = null;
@@ -261,57 +252,40 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       interceptResolve = resolve;
     });
 
-    // Listen for responses
-    client.on('Fetch.requestPaused', async (event) => {
-      console.log('[PDONLINE-DOCS] Intercepted request:', event.request.url);
+    const responseListener = async (response) => {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
 
-      // Check if this is a PDF response
-      const responseHeaders = event.responseHeaders || [];
-      const contentType = responseHeaders.find(h => h.name.toLowerCase() === 'content-type')?.value || '';
-
+      console.log('[PDONLINE-DOCS] Response:', url);
       console.log('[PDONLINE-DOCS] Content-Type:', contentType);
 
-      if (contentType.includes('application/pdf') || contentType.includes('octet-stream')) {
-        console.log('[PDONLINE-DOCS] Found PDF response! Getting body...');
+      if (contentType.includes('application/pdf') || contentType.includes('octet-stream') || url.includes('.pdf')) {
+        console.log('[PDONLINE-DOCS] Found PDF response! Getting buffer...');
 
         try {
-          // Get the response body
-          const bodyResponse = await client.send('Fetch.getResponseBody', {
-            requestId: event.requestId
-          });
+          const buffer = await response.body();
+          console.log('[PDONLINE-DOCS] Got response buffer, size:', buffer.length);
 
-          console.log('[PDONLINE-DOCS] Got response body, base64:', bodyResponse.base64Encoded);
-          console.log('[PDONLINE-DOCS] Body length:', bodyResponse.body.length);
-
-          pdfBase64 = bodyResponse.base64Encoded ? bodyResponse.body : Buffer.from(bodyResponse.body).toString('base64');
-
-          // Continue the request
-          await client.send('Fetch.continueRequest', {
-            requestId: event.requestId
-          });
+          pdfBase64 = buffer.toString('base64');
+          console.log('[PDONLINE-DOCS] Converted to base64, length:', pdfBase64.length);
 
           interceptResolve();
         } catch (err) {
-          console.error('[PDONLINE-DOCS] Error getting response body:', err);
-          await client.send('Fetch.continueRequest', {
-            requestId: event.requestId
-          });
+          console.error('[PDONLINE-DOCS] Error getting response body:', err.message);
         }
-      } else {
-        // Not the PDF, continue normally
-        await client.send('Fetch.continueRequest', {
-          requestId: event.requestId
-        });
       }
-    });
+    };
+
+    page.on('response', responseListener);
 
     console.log('[PDONLINE-DOCS] Clicking download link...');
     await decisionLink.click();
 
     // Wait for the PDF to be intercepted (timeout after 30 seconds)
-    console.log('[PDONLINE-DOCS] Waiting for PDF intercept...');
+    console.log('[PDONLINE-DOCS] Waiting for PDF response...');
     const timeout = setTimeout(() => {
       if (!pdfBase64) {
+        console.log('[PDONLINE-DOCS] Timeout waiting for PDF');
         interceptResolve();
       }
     }, 30000);
@@ -319,14 +293,14 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     await interceptPromise;
     clearTimeout(timeout);
 
-    // Disable fetch to avoid interfering with other requests
-    await client.send('Fetch.disable');
+    // Remove listener
+    page.off('response', responseListener);
 
     if (!pdfBase64) {
-      throw new Error('Failed to intercept PDF download - no PDF response found');
+      throw new Error('Failed to capture PDF response - no PDF found');
     }
 
-    console.log('[PDONLINE-DOCS] PDF intercepted, base64 length:', pdfBase64.length);
+    console.log('[PDONLINE-DOCS] PDF captured, base64 length:', pdfBase64.length);
 
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
