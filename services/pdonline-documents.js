@@ -255,21 +255,35 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
 
     // Use page.evaluate with fetch to download the file as base64
     console.log('[PDONLINE-DOCS] Fetching file content from remote browser...');
-    const base64Content = await page.evaluate(async (url) => {
+    const downloadResult = await page.evaluate(async (url) => {
       const response = await fetch(url);
+      console.log('Fetch status:', response.status);
+      console.log('Fetch content-type:', response.headers.get('content-type'));
+
       const blob = await response.blob();
+      console.log('Blob size:', blob.size);
+      console.log('Blob type:', blob.type);
+
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => {
           // Remove the data:application/pdf;base64, prefix
           const base64 = reader.result.split(',')[1];
-          resolve(base64);
+          resolve({
+            base64: base64,
+            size: blob.size,
+            type: blob.type,
+            status: response.status
+          });
         };
         reader.readAsDataURL(blob);
       });
     }, fullUrl);
 
-    console.log('[PDONLINE-DOCS] Received base64 content, length:', base64Content.length);
+    console.log('[PDONLINE-DOCS] Response status:', downloadResult.status);
+    console.log('[PDONLINE-DOCS] Blob size:', downloadResult.size);
+    console.log('[PDONLINE-DOCS] Blob type:', downloadResult.type);
+    console.log('[PDONLINE-DOCS] Base64 length:', downloadResult.base64.length);
 
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
@@ -283,8 +297,13 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     }
 
     // Convert base64 to buffer and write to file
+    console.log('[PDONLINE-DOCS] Converting base64 to buffer...');
+    const pdfBuffer = Buffer.from(downloadResult.base64, 'base64');
+    console.log('[PDONLINE-DOCS] Buffer size:', pdfBuffer.length);
+    console.log('[PDONLINE-DOCS] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
+    console.log('[PDONLINE-DOCS] Is valid PDF header?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
+
     console.log('[PDONLINE-DOCS] Writing file to disk...');
-    const pdfBuffer = Buffer.from(base64Content, 'base64');
     fs.writeFileSync(filePath, pdfBuffer);
 
     const stats = fs.statSync(filePath);
