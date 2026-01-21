@@ -249,6 +249,9 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       decisionLink.click()
     ]);
 
+    console.log('[PDONLINE-DOCS] Download event received');
+    console.log('[PDONLINE-DOCS] Download suggested filename:', await download.suggestedFilename());
+
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
     const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
@@ -260,22 +263,41 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
+    console.log('[PDONLINE-DOCS] Output path:', filePath);
+
     // For CDP connections (Browserbase), get the file as a stream and write it
-    console.log('[PDONLINE-DOCS] Reading download stream...');
+    console.log('[PDONLINE-DOCS] Creating read stream...');
     const stream = await download.createReadStream();
+    console.log('[PDONLINE-DOCS] Stream created, piping to file...');
+
     const writeStream = fs.createWriteStream(filePath);
+
+    let bytesWritten = 0;
+    stream.on('data', (chunk) => {
+      bytesWritten += chunk.length;
+      console.log(`[PDONLINE-DOCS] Received ${chunk.length} bytes (total: ${bytesWritten})`);
+    });
 
     await new Promise((resolve, reject) => {
       stream.pipe(writeStream);
-      writeStream.on('finish', resolve);  // Wait for write stream to finish, not read stream to end
-      stream.on('error', reject);
-      writeStream.on('error', reject);
+      writeStream.on('finish', () => {
+        console.log(`[PDONLINE-DOCS] Write stream finished. Total bytes written: ${bytesWritten}`);
+        resolve();
+      });
+      stream.on('error', (err) => {
+        console.error('[PDONLINE-DOCS] Stream error:', err);
+        reject(err);
+      });
+      writeStream.on('error', (err) => {
+        console.error('[PDONLINE-DOCS] Write stream error:', err);
+        reject(err);
+      });
     });
 
-    console.log('[PDONLINE-DOCS] ✅ File written to disk');
-
+    console.log('[PDONLINE-DOCS] Checking file on disk...');
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
+    console.log('[PDONLINE-DOCS] File size on disk:', fileSizeKB, 'KB');
 
     console.log('[PDONLINE-DOCS] ✅ Downloaded:', filename);
     console.log('[PDONLINE-DOCS] ✅ Size:', fileSizeKB, 'KB');
