@@ -11,88 +11,57 @@ import path from 'path';
  * @returns {Promise<Object>} Result object with success status, file path, and metadata
  */
 export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
-  console.log('===========================================');
-  console.log('[PDONLINE-DOCS] Starting document downloader');
-  console.log('[PDONLINE-DOCS] Application number:', applicationNumber);
-  console.log('===========================================');
-
   const browserbaseApiKey = process.env.BROWSERBASE_API_KEY;
   const browserbaseProjectId = process.env.BROWSERBASE_PROJECT_ID;
 
   if (!browserbaseApiKey || !browserbaseProjectId) {
-    console.error('[PDONLINE-DOCS] Missing BrowserBase credentials');
     throw new Error('BrowserBase credentials not configured');
   }
 
   let browser;
 
   try {
-    // Connect to BrowserBase
-    console.log('[PDONLINE-DOCS] Connecting to BrowserBase...');
-
     browser = await chromium.connectOverCDP(
       `wss://connect.browserbase.com?apiKey=${browserbaseApiKey}&projectId=${browserbaseProjectId}`,
-      { timeout: 30000 }
+      { timeout: 25000 }
     );
-    console.log('[PDONLINE-DOCS] ✅ Connected to BrowserBase');
 
     const context = browser.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
-    page.setDefaultTimeout(10000);
+    page.setDefaultTimeout(8000);
 
-    // STEP 1: Navigate to PDOnline
-    console.log('[PDONLINE-DOCS] Navigating to PDOnline...');
+    // Navigate and accept terms
     await page.goto('https://cogc.cloud.infor.com/ePathway/epthprod/Web/default.aspx', { waitUntil: 'domcontentloaded' });
-    console.log('[PDONLINE-DOCS] ✅ Loaded homepage');
-
     await page.click('a:has-text("All applications")');
-    console.log('[PDONLINE-DOCS] ✅ Clicked All applications');
-
     await page.click('input#ctl00_MainBodyContent_mDataList_ctl03_mDataGrid_ctl02_ctl00');
     await page.click('input[type="submit"][value="Next"]');
-    console.log('[PDONLINE-DOCS] ✅ Accepted terms');
 
-    // STEP 2: Search by application number
-    console.log('[PDONLINE-DOCS] Searching for:', applicationNumber);
+    // Search by application number
     await page.fill('#ctl00_MainBodyContent_mGeneralEnquirySearchControl_mTabControl_ctl04_mFormattedNumberTextBox', applicationNumber);
     await page.click('#ctl00_MainBodyContent_mGeneralEnquirySearchControl_mSearchButton');
     await page.waitForSelector('table#gridResults', { timeout: 5000 });
-    console.log('[PDONLINE-DOCS] ✅ Search complete');
 
-    // STEP 3: Click into first result
+    // Click into first result
     const firstLink = await page.$('table#gridResults tr.ContentPanel td:first-child a, table#gridResults tr.AlternateContentPanel td:first-child a');
     if (!firstLink) {
       await browser.close();
-      return {
-        success: false,
-        error: 'No results found for application number',
-        filePath: null
-      };
+      return { success: false, error: 'No results found for application number', filePath: null };
     }
 
     await firstLink.click();
-    console.log('[PDONLINE-DOCS] ✅ Opened application detail');
 
-    // STEP 4: Access documents iframe
-    const iframeElement = await page.waitForSelector('iframe.resp-iframe', { timeout: 15000 });
+    // Access documents iframe
+    const iframeElement = await page.waitForSelector('iframe.resp-iframe', { timeout: 12000 });
     const iframe = await iframeElement.contentFrame();
+    await iframe.waitForSelector('table.dataTable', { timeout: 15000 });
 
-    // Wait longer for documents table - iframe loads external URL which can be slow
-    console.log('[PDONLINE-DOCS] Waiting for documents table to load...');
-    await iframe.waitForSelector('table.dataTable', { timeout: 20000 });
-    console.log('[PDONLINE-DOCS] ✅ Documents loaded');
-
-    // STEP 5: Search all pages for decision notice
-    console.log('[PDONLINE-DOCS] Searching for decision notice...');
-
+    // Search all pages for decision notice
     let signedInfo = null;
     let unsignedInfo = null;
     let pageNum = 1;
     let foundPage = null;
 
     while (true) {
-      console.log(`[PDONLINE-DOCS] → Scanning page ${pageNum}...`);
-
       const docsTable = await iframe.$('table.dataTable');
       if (!docsTable) break;
 
@@ -101,89 +70,51 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       for (const row of rows) {
         const cells = await row.$$('td');
         if (cells.length >= 4) {
-          const linkText = await cells[0].innerText();
-          const nameText = await cells[1].innerText();
+          const linkText = (await cells[0].innerText()).trim();
+          const nameText = (await cells[1].innerText()).trim();
 
-          const linkTextClean = linkText.trim();
-          const nameTextClean = nameText.trim();
-
-          // Check for SIGNED Decision Notice (preferred)
-          if (nameTextClean.includes('Signed Decision Notice')) {
-            signedInfo = {
-              linkText: linkTextClean,
-              name: nameTextClean,
-              isSigned: true,
-              page: pageNum
-            };
-            console.log('[PDONLINE-DOCS] ✅ Found SIGNED:', nameTextClean, `(${linkTextClean})`);
+          if (nameText.includes('Signed Decision Notice')) {
+            signedInfo = { linkText, name: nameText, isSigned: true, page: pageNum };
             foundPage = pageNum;
             break;
           }
 
-          // Check for unsigned Decision Notice (fallback)
-          if (nameTextClean.includes('Decision Notice') && !unsignedInfo) {
-            // Exclude cover letters
-            if (!nameTextClean.toLowerCase().includes('cover letter')) {
-              unsignedInfo = {
-                linkText: linkTextClean,
-                name: nameTextClean,
-                isSigned: false,
-                page: pageNum
-              };
-              console.log('[PDONLINE-DOCS] ⚠ Found UNSIGNED:', nameTextClean, `(${linkTextClean})`);
-            }
+          if (nameText.includes('Decision Notice') && !unsignedInfo && !nameText.toLowerCase().includes('cover letter')) {
+            unsignedInfo = { linkText, name: nameText, isSigned: false, page: pageNum };
           }
         }
       }
 
-      // If we found signed, stop searching
       if (signedInfo) {
         foundPage = signedInfo.page;
         break;
       }
 
-      // If we found unsigned and we're on page 2+, stop
       if (unsignedInfo && pageNum >= 2) {
         foundPage = unsignedInfo.page;
-        console.log(`[PDONLINE-DOCS] ✅ Stopping search (found unsigned, scanned ${pageNum} pages)`);
         break;
       }
 
-      // Check for Next button
       const nextButton = await iframe.$('a:has-text("Next")');
-      if (nextButton) {
-        const buttonClass = await nextButton.getAttribute('class') || '';
-        if (!buttonClass.includes('disabled')) {
-          console.log(`[PDONLINE-DOCS] → Going to page ${pageNum + 1}...`);
-          await nextButton.click();
-          await iframe.waitForLoadState('domcontentloaded');
-          pageNum += 1;
-          continue;
-        }
+      if (nextButton && !(await nextButton.getAttribute('class') || '').includes('disabled')) {
+        await nextButton.click();
+        await iframe.waitForLoadState('domcontentloaded');
+        pageNum += 1;
+        continue;
       }
 
-      // No more pages
-      console.log(`[PDONLINE-DOCS] ✅ Scanned all ${pageNum} page(s)`);
       break;
     }
 
-    // Decide which document to use
     const decisionInfo = signedInfo || unsignedInfo;
 
     if (!decisionInfo) {
       await browser.close();
-      return {
-        success: false,
-        error: 'No Decision Notice found (signed or unsigned)',
-        filePath: null
-      };
+      return { success: false, error: 'No Decision Notice found', filePath: null };
     }
 
     // Navigate back to correct page if needed
     if (foundPage && foundPage !== pageNum) {
-      console.log(`[PDONLINE-DOCS] → Navigating back to page ${foundPage}...`);
-
-      // Go back to page 1
       while (pageNum > 1) {
         const prevButton = await iframe.$('a:has-text("Previous")');
         if (prevButton) {
@@ -195,7 +126,6 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
         }
       }
 
-      // Forward to target page
       while (pageNum < foundPage) {
         const nextButton = await iframe.$('a:has-text("Next")');
         if (nextButton) {
@@ -208,13 +138,7 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       }
     }
 
-    // STEP 6: Download PDF
-    console.log('[PDONLINE-DOCS] Downloading PDF...');
-    if (!decisionInfo.isSigned) {
-      console.log('[PDONLINE-DOCS] ⚠ WARNING: Decision Notice is UNSIGNED');
-    }
-
-    // Find the link on current page
+    // Find the download link on current page
     const docsTable = await iframe.$('table.dataTable');
     let decisionLink = null;
 
@@ -223,10 +147,8 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       for (const row of rows) {
         const cells = await row.$$('td');
         if (cells.length >= 4) {
-          const linkText = await cells[0].innerText();
-          const linkTextClean = linkText.trim();
-
-          if (linkTextClean === decisionInfo.linkText) {
+          const linkText = (await cells[0].innerText()).trim();
+          if (linkText === decisionInfo.linkText) {
             decisionLink = await cells[0].$('a');
             break;
           }
@@ -236,113 +158,64 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
 
     if (!decisionLink) {
       await browser.close();
-      return {
-        success: false,
-        error: `Could not find link ${decisionInfo.linkText} on page ${foundPage}`,
-        filePath: null
-      };
+      return { success: false, error: `Could not find link ${decisionInfo.linkText}`, filePath: null };
     }
 
-    // Use page.route to intercept the PDF request and capture the response
-    console.log('[PDONLINE-DOCS] Setting up request interceptor...');
-
+    // Intercept PDF download
     let pdfBuffer = null;
     let interceptResolve = null;
-    const interceptPromise = new Promise((resolve) => {
-      interceptResolve = resolve;
-    });
+    const interceptPromise = new Promise((resolve) => { interceptResolve = resolve; });
 
     const routeHandler = async (route, request) => {
-      const url = request.url();
-      console.log('[PDONLINE-DOCS] Intercepted request:', url);
-
-      // Fetch the response ourselves
       const response = await route.fetch();
       const contentType = response.headers()['content-type'] || '';
 
-      console.log('[PDONLINE-DOCS] Content-Type:', contentType);
-
       if (contentType.includes('application/pdf') || contentType.includes('octet-stream')) {
-        console.log('[PDONLINE-DOCS] Found PDF! Capturing body...');
-
-        // Get the body as buffer
         pdfBuffer = await response.body();
-        console.log('[PDONLINE-DOCS] Captured PDF buffer, size:', pdfBuffer.length);
-
         interceptResolve();
       }
 
-      // Fulfill the route so the page continues normally
       await route.fulfill({ response });
     };
 
-    // Route all requests from the page (including iframes)
     await page.route('**/*', routeHandler);
-
-    console.log('[PDONLINE-DOCS] Clicking download link...');
     await decisionLink.click();
 
-    // Wait for the PDF to be intercepted (timeout after 30 seconds)
-    console.log('[PDONLINE-DOCS] Waiting for PDF...');
     const timeout = setTimeout(() => {
-      if (!pdfBuffer) {
-        console.log('[PDONLINE-DOCS] Timeout waiting for PDF');
-        interceptResolve();
-      }
-    }, 30000);
+      if (!pdfBuffer) interceptResolve();
+    }, 20000);
 
     await interceptPromise;
     clearTimeout(timeout);
-
-    // Unroute to stop intercepting
     await page.unroute('**/*', routeHandler);
 
     if (!pdfBuffer) {
-      throw new Error('Failed to capture PDF - no PDF found');
+      throw new Error('Failed to capture PDF');
     }
 
-    console.log('[PDONLINE-DOCS] PDF captured successfully, size:', pdfBuffer.length);
-
-    // Save to output directory
-    const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
-    const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
-    const filePath = path.join(outputDir, filename);
-
-    // Ensure output directory exists
-    if (!fs.existsSync(outputDir)) {
-      console.log(`[PDONLINE-DOCS] Creating output directory: ${outputDir}`);
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    // Validate PDF and write to file
-    console.log('[PDONLINE-DOCS] Validating PDF...');
-    console.log('[PDONLINE-DOCS] Buffer size:', pdfBuffer.length);
-    console.log('[PDONLINE-DOCS] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
-    console.log('[PDONLINE-DOCS] Is valid PDF header?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
-
+    // Validate and save PDF
     if (pdfBuffer.toString('utf8', 0, 4) !== '%PDF') {
       throw new Error('Downloaded file is not a valid PDF');
     }
 
-    console.log('[PDONLINE-DOCS] Writing file to disk...');
+    const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
+    const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
+    const filePath = path.join(outputDir, filename);
+
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
     fs.writeFileSync(filePath, pdfBuffer);
-
-    const stats = fs.statSync(filePath);
-    const fileSizeKB = (stats.size / 1024).toFixed(2);
-    console.log('[PDONLINE-DOCS] File size on disk:', fileSizeKB, 'KB');
-
-    console.log('[PDONLINE-DOCS] ✅ Downloaded:', filename);
-    console.log('[PDONLINE-DOCS] ✅ Size:', fileSizeKB, 'KB');
-    console.log('[PDONLINE-DOCS] ✅ Signed:', decisionInfo.isSigned);
+    const fileSizeKB = (pdfBuffer.length / 1024).toFixed(2);
 
     await browser.close();
-    console.log('[PDONLINE-DOCS] ✅ Complete');
 
     return {
       success: true,
-      filePath: filePath,
-      filename: filename,
-      applicationNumber: applicationNumber,
+      filePath,
+      filename,
+      applicationNumber,
       fileSizeKB: parseFloat(fileSizeKB),
       isSigned: decisionInfo.isSigned,
       documentName: decisionInfo.name,
@@ -351,13 +224,12 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
 
   } catch (error) {
     console.error('[PDONLINE-DOCS ERROR]', error.message);
-    console.error('[PDONLINE-DOCS ERROR STACK]', error.stack);
 
     if (browser) {
       try {
         await browser.close();
       } catch (closeError) {
-        console.error('[PDONLINE-DOCS] Error closing browser:', closeError.message);
+        // Silent fail on close error
       }
     }
 

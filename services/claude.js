@@ -1040,33 +1040,23 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
         if (sendProgress) sendProgress('📄 Downloading decision notice...');
 
         const appNumber = toolUse.input.application_number;
-        console.log('[CLAUDE] Downloading decision notice for:', appNumber);
 
         try {
           const { getDecisionNotice } = await import('./pdonline-documents.js');
           const docResult = await getDecisionNotice(appNumber, '/tmp');
 
           if (docResult.success) {
-            console.log(`[CLAUDE] Downloaded decision notice: ${docResult.filename}`);
             if (sendProgress) sendProgress(docResult.isSigned ? '✅ Analyzing signed decision notice...' : '⚠️ Analyzing unsigned decision notice...');
 
-            // Read PDF for Claude to analyze
+            // Read PDF and analyze with Claude
             const fs = await import('fs');
             const pdfBuffer = fs.readFileSync(docResult.filePath);
-            console.log('[CLAUDE] Read PDF buffer, size:', pdfBuffer.length);
-            console.log('[CLAUDE] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
-            console.log('[CLAUDE] Is valid PDF?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
-
             const base64Pdf = pdfBuffer.toString('base64');
-            console.log('[CLAUDE] Base64 PDF length:', base64Pdf.length);
-            console.log('[CLAUDE] Base64 starts with:', base64Pdf.substring(0, 50));
 
-            // Analyze PDF with Claude
-            console.log('[CLAUDE] Analyzing decision notice with Claude...');
             try {
               const analysisResponse = await anthropic.messages.create({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 2000,
+                max_tokens: 4000,
                 messages: [{
                   role: 'user',
                   content: [
@@ -1080,14 +1070,39 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
                     },
                     {
                       type: 'text',
-                      text: 'summarise the more pertinent conditions within this decision notice'
+                      text: `Analyze this decision notice and provide a structured summary in the following format:
+
+1. Start with the application number as a header
+2. Write an opening paragraph explaining what this application is about and what it approves
+3. Add a "Key Changes Approved:" section that lists the main categories of changes
+4. For each major category, use a clear header followed by bullet points with " - " prefix
+5. Common categories to look for:
+   - Mixed Use Authorization or Use Changes
+   - Major Infrastructure Requirements
+   - Operational Controls or Restrictions
+   - Pre-Commencement Requirements
+6. End with a summary paragraph explaining the significance
+
+CRITICAL FORMATTING:
+- Use double line breaks (\\n\\n) between major sections
+- Use single line break (\\n) between bullet points within a section
+- Start each bullet point with " - " (space, dash, space)
+- Keep paragraphs concise (2-4 sentences)
+
+Focus on conditions that affect:
+- How the property can be used
+- Required infrastructure or parking
+- Operational restrictions (hours, vehicle access, etc.)
+- What must be completed before operation
+- Any significant amenities or requirements
+
+Be specific with numbers, hours, and requirements. Avoid generic statements.`
                     }
                   ]
                 }]
               });
 
               const summary = analysisResponse.content.find(c => c.type === 'text')?.text || 'Could not analyze document';
-              console.log('[CLAUDE] ✅ Analysis complete');
               if (sendProgress) sendProgress('✅ Analysis complete');
 
               toolResult = {
