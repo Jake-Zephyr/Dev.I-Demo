@@ -1040,29 +1040,19 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
         if (sendProgress) sendProgress('📄 Downloading decision notice...');
 
         const appNumber = toolUse.input.application_number;
-        console.log('[CLAUDE] Downloading decision notice for:', appNumber);
 
         try {
           const { getDecisionNotice } = await import('./pdonline-documents.js');
           const docResult = await getDecisionNotice(appNumber, '/tmp');
 
           if (docResult.success) {
-            console.log(`[CLAUDE] Downloaded decision notice: ${docResult.filename}`);
             if (sendProgress) sendProgress(docResult.isSigned ? '✅ Analyzing signed decision notice...' : '⚠️ Analyzing unsigned decision notice...');
 
-            // Read PDF for Claude to analyze
+            // Read PDF and analyze with Claude
             const fs = await import('fs');
             const pdfBuffer = fs.readFileSync(docResult.filePath);
-            console.log('[CLAUDE] Read PDF buffer, size:', pdfBuffer.length);
-            console.log('[CLAUDE] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
-            console.log('[CLAUDE] Is valid PDF?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
-
             const base64Pdf = pdfBuffer.toString('base64');
-            console.log('[CLAUDE] Base64 PDF length:', base64Pdf.length);
-            console.log('[CLAUDE] Base64 starts with:', base64Pdf.substring(0, 50));
 
-            // Analyze PDF with Claude
-            console.log('[CLAUDE] Analyzing decision notice with Claude...');
             try {
               const analysisResponse = await anthropic.messages.create({
                 model: 'claude-sonnet-4-20250514',
@@ -1087,7 +1077,6 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
               });
 
               const summary = analysisResponse.content.find(c => c.type === 'text')?.text || 'Could not analyze document';
-              console.log('[CLAUDE] ✅ Analysis complete');
               if (sendProgress) sendProgress('✅ Analysis complete');
 
               toolResult = {
