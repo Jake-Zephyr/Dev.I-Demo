@@ -243,48 +243,49 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Listen for response events to capture the PDF
-    console.log('[PDONLINE-DOCS] Setting up response listener...');
+    // Use page.route to intercept the PDF request and capture the response
+    console.log('[PDONLINE-DOCS] Setting up request interceptor...');
 
-    let pdfBase64 = null;
+    let pdfBuffer = null;
     let interceptResolve = null;
     const interceptPromise = new Promise((resolve) => {
       interceptResolve = resolve;
     });
 
-    const responseListener = async (response) => {
-      const url = response.url();
+    const routeHandler = async (route, request) => {
+      const url = request.url();
+      console.log('[PDONLINE-DOCS] Intercepted request:', url);
+
+      // Fetch the response ourselves
+      const response = await route.fetch();
       const contentType = response.headers()['content-type'] || '';
 
-      console.log('[PDONLINE-DOCS] Response:', url);
       console.log('[PDONLINE-DOCS] Content-Type:', contentType);
 
-      if (contentType.includes('application/pdf') || contentType.includes('octet-stream') || url.includes('.pdf')) {
-        console.log('[PDONLINE-DOCS] Found PDF response! Getting buffer...');
+      if (contentType.includes('application/pdf') || contentType.includes('octet-stream')) {
+        console.log('[PDONLINE-DOCS] Found PDF! Capturing body...');
 
-        try {
-          const buffer = await response.body();
-          console.log('[PDONLINE-DOCS] Got response buffer, size:', buffer.length);
+        // Get the body as buffer
+        pdfBuffer = await response.body();
+        console.log('[PDONLINE-DOCS] Captured PDF buffer, size:', pdfBuffer.length);
 
-          pdfBase64 = buffer.toString('base64');
-          console.log('[PDONLINE-DOCS] Converted to base64, length:', pdfBase64.length);
-
-          interceptResolve();
-        } catch (err) {
-          console.error('[PDONLINE-DOCS] Error getting response body:', err.message);
-        }
+        interceptResolve();
       }
+
+      // Fulfill the route so the page continues normally
+      await route.fulfill({ response });
     };
 
-    page.on('response', responseListener);
+    // Route all requests from the page (including iframes)
+    await page.route('**/*', routeHandler);
 
     console.log('[PDONLINE-DOCS] Clicking download link...');
     await decisionLink.click();
 
     // Wait for the PDF to be intercepted (timeout after 30 seconds)
-    console.log('[PDONLINE-DOCS] Waiting for PDF response...');
+    console.log('[PDONLINE-DOCS] Waiting for PDF...');
     const timeout = setTimeout(() => {
-      if (!pdfBase64) {
+      if (!pdfBuffer) {
         console.log('[PDONLINE-DOCS] Timeout waiting for PDF');
         interceptResolve();
       }
@@ -293,14 +294,14 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
     await interceptPromise;
     clearTimeout(timeout);
 
-    // Remove listener
-    page.off('response', responseListener);
+    // Unroute to stop intercepting
+    await page.unroute('**/*', routeHandler);
 
-    if (!pdfBase64) {
-      throw new Error('Failed to capture PDF response - no PDF found');
+    if (!pdfBuffer) {
+      throw new Error('Failed to capture PDF - no PDF found');
     }
 
-    console.log('[PDONLINE-DOCS] PDF captured, base64 length:', pdfBase64.length);
+    console.log('[PDONLINE-DOCS] PDF captured successfully, size:', pdfBuffer.length);
 
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
@@ -313,12 +314,15 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    // Convert base64 to buffer and write to file
-    console.log('[PDONLINE-DOCS] Converting base64 to buffer...');
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+    // Validate PDF and write to file
+    console.log('[PDONLINE-DOCS] Validating PDF...');
     console.log('[PDONLINE-DOCS] Buffer size:', pdfBuffer.length);
     console.log('[PDONLINE-DOCS] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
     console.log('[PDONLINE-DOCS] Is valid PDF header?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
+
+    if (pdfBuffer.toString('utf8', 0, 4) !== '%PDF') {
+      throw new Error('Downloaded file is not a valid PDF');
+    }
 
     console.log('[PDONLINE-DOCS] Writing file to disk...');
     fs.writeFileSync(filePath, pdfBuffer);
