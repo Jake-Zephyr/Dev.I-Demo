@@ -267,10 +267,12 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
 
     await new Promise((resolve, reject) => {
       stream.pipe(writeStream);
-      stream.on('end', resolve);
+      writeStream.on('finish', resolve);  // Wait for write stream to finish, not read stream to end
       stream.on('error', reject);
       writeStream.on('error', reject);
     });
+
+    console.log('[PDONLINE-DOCS] ✅ File written to disk');
 
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
