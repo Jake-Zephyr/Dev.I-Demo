@@ -243,47 +243,90 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Get the download URL from the link
-    console.log('[PDONLINE-DOCS] Getting download URL...');
-    const downloadUrl = await decisionLink.getAttribute('href');
-    console.log('[PDONLINE-DOCS] Download URL:', downloadUrl);
+    // Use CDP Fetch domain to intercept the download and get the actual PDF content
+    console.log('[PDONLINE-DOCS] Setting up CDP to intercept download...');
 
-    // Build full URL if it's relative
-    const baseUrl = page.url();
-    const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : new URL(downloadUrl, baseUrl).toString();
-    console.log('[PDONLINE-DOCS] Full URL:', fullUrl);
+    const client = await context.newCDPSession(page);
 
-    // Use page.evaluate with fetch to download the file as base64
-    console.log('[PDONLINE-DOCS] Fetching file content from remote browser...');
-    const downloadResult = await page.evaluate(async (url) => {
-      const response = await fetch(url);
-      console.log('Fetch status:', response.status);
-      console.log('Fetch content-type:', response.headers.get('content-type'));
+    // Enable Fetch domain to intercept requests
+    await client.send('Fetch.enable', {
+      patterns: [{ urlPattern: '*', requestStage: 'Response' }]
+    });
 
-      const blob = await response.blob();
-      console.log('Blob size:', blob.size);
-      console.log('Blob type:', blob.type);
+    console.log('[PDONLINE-DOCS] CDP Fetch enabled');
 
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          // Remove the data:application/pdf;base64, prefix
-          const base64 = reader.result.split(',')[1];
-          resolve({
-            base64: base64,
-            size: blob.size,
-            type: blob.type,
-            status: response.status
+    let pdfBase64 = null;
+    let interceptResolve = null;
+    const interceptPromise = new Promise((resolve) => {
+      interceptResolve = resolve;
+    });
+
+    // Listen for responses
+    client.on('Fetch.requestPaused', async (event) => {
+      console.log('[PDONLINE-DOCS] Intercepted request:', event.request.url);
+
+      // Check if this is a PDF response
+      const responseHeaders = event.responseHeaders || [];
+      const contentType = responseHeaders.find(h => h.name.toLowerCase() === 'content-type')?.value || '';
+
+      console.log('[PDONLINE-DOCS] Content-Type:', contentType);
+
+      if (contentType.includes('application/pdf') || contentType.includes('octet-stream')) {
+        console.log('[PDONLINE-DOCS] Found PDF response! Getting body...');
+
+        try {
+          // Get the response body
+          const bodyResponse = await client.send('Fetch.getResponseBody', {
+            requestId: event.requestId
           });
-        };
-        reader.readAsDataURL(blob);
-      });
-    }, fullUrl);
 
-    console.log('[PDONLINE-DOCS] Response status:', downloadResult.status);
-    console.log('[PDONLINE-DOCS] Blob size:', downloadResult.size);
-    console.log('[PDONLINE-DOCS] Blob type:', downloadResult.type);
-    console.log('[PDONLINE-DOCS] Base64 length:', downloadResult.base64.length);
+          console.log('[PDONLINE-DOCS] Got response body, base64:', bodyResponse.base64Encoded);
+          console.log('[PDONLINE-DOCS] Body length:', bodyResponse.body.length);
+
+          pdfBase64 = bodyResponse.base64Encoded ? bodyResponse.body : Buffer.from(bodyResponse.body).toString('base64');
+
+          // Continue the request
+          await client.send('Fetch.continueRequest', {
+            requestId: event.requestId
+          });
+
+          interceptResolve();
+        } catch (err) {
+          console.error('[PDONLINE-DOCS] Error getting response body:', err);
+          await client.send('Fetch.continueRequest', {
+            requestId: event.requestId
+          });
+        }
+      } else {
+        // Not the PDF, continue normally
+        await client.send('Fetch.continueRequest', {
+          requestId: event.requestId
+        });
+      }
+    });
+
+    console.log('[PDONLINE-DOCS] Clicking download link...');
+    await decisionLink.click();
+
+    // Wait for the PDF to be intercepted (timeout after 30 seconds)
+    console.log('[PDONLINE-DOCS] Waiting for PDF intercept...');
+    const timeout = setTimeout(() => {
+      if (!pdfBase64) {
+        interceptResolve();
+      }
+    }, 30000);
+
+    await interceptPromise;
+    clearTimeout(timeout);
+
+    // Disable fetch to avoid interfering with other requests
+    await client.send('Fetch.disable');
+
+    if (!pdfBase64) {
+      throw new Error('Failed to intercept PDF download - no PDF response found');
+    }
+
+    console.log('[PDONLINE-DOCS] PDF intercepted, base64 length:', pdfBase64.length);
 
     // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
@@ -298,7 +341,7 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
 
     // Convert base64 to buffer and write to file
     console.log('[PDONLINE-DOCS] Converting base64 to buffer...');
-    const pdfBuffer = Buffer.from(downloadResult.base64, 'base64');
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
     console.log('[PDONLINE-DOCS] Buffer size:', pdfBuffer.length);
     console.log('[PDONLINE-DOCS] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
     console.log('[PDONLINE-DOCS] Is valid PDF header?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
