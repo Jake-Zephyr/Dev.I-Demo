@@ -243,16 +243,9 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       };
     }
 
-    // Download - for Browserbase CDP, we need to get the buffer and write manually
-    const [download] = await Promise.all([
-      page.waitForEvent('download'),
-      decisionLink.click()
-    ]);
+    // Download - Use CDP protocol directly for Browserbase
+    console.log('[PDONLINE-DOCS] Setting up CDP download behavior...');
 
-    console.log('[PDONLINE-DOCS] Download event received');
-    console.log('[PDONLINE-DOCS] Download suggested filename:', await download.suggestedFilename());
-
-    // Save to output directory
     const signedSuffix = decisionInfo.isSigned ? '' : '_UNSIGNED';
     const filename = `DA_${applicationNumber.replace(/\//g, '_')}_Decision_Notice${signedSuffix}.pdf`;
     const filePath = path.join(outputDir, filename);
@@ -263,38 +256,63 @@ export async function getDecisionNotice(applicationNumber, outputDir = '/tmp') {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
-    console.log('[PDONLINE-DOCS] Output path:', filePath);
-
-    // For CDP connections (Browserbase), get the file as a stream and write it
-    console.log('[PDONLINE-DOCS] Creating read stream...');
-    const stream = await download.createReadStream();
-    console.log('[PDONLINE-DOCS] Stream created, piping to file...');
-
-    const writeStream = fs.createWriteStream(filePath);
-
-    let bytesWritten = 0;
-    stream.on('data', (chunk) => {
-      bytesWritten += chunk.length;
-      console.log(`[PDONLINE-DOCS] Received ${chunk.length} bytes (total: ${bytesWritten})`);
+    // Get CDP session and enable download behavior
+    const client = await context.newCDPSession(page);
+    await client.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: outputDir,
+      eventsEnabled: true
     });
 
-    await new Promise((resolve, reject) => {
-      stream.pipe(writeStream);
-      writeStream.on('finish', () => {
-        console.log(`[PDONLINE-DOCS] Write stream finished. Total bytes written: ${bytesWritten}`);
-        resolve();
-      });
-      stream.on('error', (err) => {
-        console.error('[PDONLINE-DOCS] Stream error:', err);
-        reject(err);
-      });
-      writeStream.on('error', (err) => {
-        console.error('[PDONLINE-DOCS] Write stream error:', err);
-        reject(err);
-      });
+    console.log('[PDONLINE-DOCS] CDP download enabled, clicking link...');
+
+    let downloadGuid = null;
+    let downloadComplete = false;
+
+    // Listen for download progress
+    client.on('Browser.downloadProgress', (event) => {
+      console.log(`[PDONLINE-DOCS] Download progress: ${event.state} - ${event.receivedBytes || 0} bytes`);
+      downloadGuid = event.guid;
+      if (event.state === 'completed') {
+        downloadComplete = true;
+      }
     });
 
-    console.log('[PDONLINE-DOCS] Checking file on disk...');
+    // Click the download link
+    await decisionLink.click();
+
+    // Wait for download to complete (timeout after 30 seconds)
+    console.log('[PDONLINE-DOCS] Waiting for download to complete...');
+    const maxWaitTime = 30000;
+    const startTime = Date.now();
+    while (!downloadComplete && (Date.now() - startTime) < maxWaitTime) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    if (!downloadComplete) {
+      throw new Error('Download did not complete within 30 seconds');
+    }
+
+    console.log('[PDONLINE-DOCS] Download completed, checking file...');
+
+    // Find the downloaded file (CDP may name it differently)
+    const files = fs.readdirSync(outputDir);
+    console.log('[PDONLINE-DOCS] Files in output dir:', files);
+
+    // Find the PDF file
+    const pdfFile = files.find(f => f.endsWith('.pdf'));
+    if (!pdfFile) {
+      throw new Error('Downloaded PDF file not found in output directory');
+    }
+
+    const downloadedPath = path.join(outputDir, pdfFile);
+
+    // Rename to our desired filename if different
+    if (pdfFile !== filename) {
+      console.log(`[PDONLINE-DOCS] Renaming ${pdfFile} to ${filename}`);
+      fs.renameSync(downloadedPath, filePath);
+    }
+
     const stats = fs.statSync(filePath);
     const fileSizeKB = (stats.size / 1024).toFixed(2);
     console.log('[PDONLINE-DOCS] File size on disk:', fileSizeKB, 'KB');
