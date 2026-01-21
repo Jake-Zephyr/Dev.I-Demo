@@ -1053,7 +1053,13 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
             // Read PDF for Claude to analyze
             const fs = await import('fs');
             const pdfBuffer = fs.readFileSync(docResult.filePath);
+            console.log('[CLAUDE] Read PDF buffer, size:', pdfBuffer.length);
+            console.log('[CLAUDE] Buffer starts with:', pdfBuffer.slice(0, 20).toString());
+            console.log('[CLAUDE] Is valid PDF?', pdfBuffer.toString('utf8', 0, 4) === '%PDF');
+
             const base64Pdf = pdfBuffer.toString('base64');
+            console.log('[CLAUDE] Base64 PDF length:', base64Pdf.length);
+            console.log('[CLAUDE] Base64 starts with:', base64Pdf.substring(0, 50));
 
             // Analyze PDF with Claude
             console.log('[CLAUDE] Analyzing decision notice with Claude...');
