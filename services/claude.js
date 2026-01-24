@@ -282,6 +282,73 @@ function extractConversationContext(conversationHistory) {
 }
 
 /**
+ * Detect and parse button options from Claude's response
+ * Looks for patterns like "[Option 1] [Option 2] [Option 3]"
+ * Returns array of button options if found, null otherwise
+ */
+function parseButtonOptions(text) {
+  if (!text) return null;
+
+  // Match pattern like "[60%] [70%] [80%] [Fully funded]"
+  const buttonPattern = /\[([^\]]+)\](?:\s*\[([^\]]+)\])+/g;
+  const matches = [...text.matchAll(buttonPattern)];
+
+  if (matches.length === 0) return null;
+
+  // Extract all button options from the text
+  const allButtons = [];
+  for (const match of matches) {
+    // Get the full match and extract all individual buttons
+    const fullMatch = match[0];
+    const individualButtons = fullMatch.match(/\[([^\]]+)\]/g);
+
+    if (individualButtons) {
+      for (const btn of individualButtons) {
+        const buttonText = btn.replace(/[\[\]]/g, '').trim();
+        if (buttonText && !allButtons.includes(buttonText)) {
+          allButtons.push(buttonText);
+        }
+      }
+    }
+  }
+
+  return allButtons.length > 0 ? allButtons : null;
+}
+
+/**
+ * Determine the question type/context for button options
+ * This helps the frontend show appropriate follow-up inputs
+ */
+function detectQuestionContext(text, buttons) {
+  if (!text || !buttons) return null;
+
+  const lowerText = text.toLowerCase();
+
+  // Detect question type based on content
+  if (lowerText.includes('lvr') || lowerText.includes('loan to value')) {
+    return { type: 'lvr', label: 'LVR (Loan to Value Ratio)' };
+  }
+  if (lowerText.includes('interest rate')) {
+    return { type: 'interest_rate', label: 'Interest Rate', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('selling cost')) {
+    return { type: 'selling_costs', label: 'Selling Costs', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('gst') && (lowerText.includes('scheme') || lowerText.includes('treatment'))) {
+    return {
+      type: 'gst_scheme',
+      label: 'GST Treatment',
+      needsFollowUp: buttons.some(b => b.toLowerCase().includes('margin'))
+    };
+  }
+  if (lowerText.includes('project type') || lowerText.includes('type of project')) {
+    return { type: 'project_type', label: 'Project Type' };
+  }
+
+  return { type: 'general', label: 'Select an option' };
+}
+
+/**
  * Build context summary for system prompt
  */
 function buildContextSummary(context) {
@@ -921,16 +988,25 @@ Step 4: Construction cost - NEVER ASSUME THIS
 "What's your total construction cost including professional fees, statutory fees, and contingency?"
 DO NOT suggest a $/sqm rate unless user explictly asks for market rates. Wait for user to provide their number.
 
-Step 5: Finance inputs
-"Finance details:
-- LVR? [60%] [70%] [80%] [Fully funded]
-- Interest rate?
-- Project timeline in months?"
+Step 5: Finance inputs - ASK ONE QUESTION AT A TIME
+"LVR (Loan to Value Ratio)? [60%] [70%] [80%] [Fully funded]"
+Then after they answer:
+"Interest rate? [6.5%] [7.0%] [7.5%] [Custom]"
+Then after they answer:
+"Project timeline in months?" (text input - user types number)
 
-Step 6: Other costs
-"- Selling costs (agent + marketing)? [3%] [4%] [Custom]
-- GST treatment? [Margin scheme] [Fully taxed]"
-multiple choice options appear as buttons. If user selects Margin Scheme, make the button open a chat box for the user to input what the project's cost base will be and say: "What is the project's cost base for Margin Scheme purposes?"
+Step 6: Other costs - ASK ONE QUESTION AT A TIME
+"Selling costs (agent + marketing)? [3%] [4%] [Custom]"
+Then after they answer:
+"GST treatment? [Margin scheme] [Fully taxed]"
+
+CRITICAL - BUTTON FORMAT RULES:
+- Multiple choice options MUST be in square brackets like [Option 1] [Option 2] [Option 3]
+- The frontend will detect [text] patterns and render them as clickable buttons
+- If user clicks [Custom] for interest rate or selling costs, then ask for their custom value
+- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes?"
+- Always present button options on the SAME LINE as the question
+- Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
 
 Step 7: Calculate
 Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
@@ -1591,11 +1667,17 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       // Fix inline bullet points by adding newlines between them (only for lists, not explanations)
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
+      // Parse button options from the response
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         feasibilityData: isFeasibility ? toolResult : null,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: true,
         toolName: toolUse.name,
         toolQuery: toolUse.input.query || toolUse.input.address || toolUse.input.propertyAddress
@@ -1609,9 +1691,15 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       let formattedAnswer = formatIntoParagraphs(stripMarkdown(textContent?.text));
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
+      // Parse button options from the response (for feasibility questions)
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: null,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: false
       };
     }
