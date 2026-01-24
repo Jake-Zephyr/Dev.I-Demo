@@ -128,23 +128,78 @@ function extractConversationContext(conversationHistory) {
     priceDiscussed: null,
     budgetRange: null
   };
-  
+
   if (!conversationHistory || conversationHistory.length === 0) {
     return context;
   }
-  
+
+  // Track if planning controls have been set from City Plan (get_property_info)
+  // Once set, they should NOT be overridden by DA documents
+  let planningControlsLocked = false;
+
   // Scan through history looking for property data and strategy signals
   for (const msg of conversationHistory) {
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
     const contentLower = content.toLowerCase();
-    
-    // Look for property addresses
+
+    // CRITICAL: Extract planning controls ONLY from get_property_info tool results
+    // This prevents DA documents from contaminating City Plan data
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          try {
+            const toolResultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+
+            // Check if this looks like a property lookup result
+            if (toolResultText.includes('"success":true') && toolResultText.includes('"property":{')) {
+              const toolResult = JSON.parse(toolResultText);
+
+              if (toolResult.success && toolResult.property) {
+                const prop = toolResult.property;
+
+                // Set planning controls (from City Plan - IMMUTABLE)
+                if (prop.zone) {
+                  context.lastZone = prop.zone;
+                  planningControlsLocked = true;
+                }
+                if (prop.density) {
+                  context.lastDensity = prop.density;
+                  planningControlsLocked = true;
+                }
+                if (prop.height) {
+                  context.lastHeight = prop.height;
+                  planningControlsLocked = true;
+                }
+
+                // Also extract basic property info
+                if (prop.address) {
+                  context.lastProperty = prop.address;
+                }
+                if (prop.lotplan) {
+                  context.lastLotplan = prop.lotplan;
+                }
+                if (prop.area) {
+                  const areaNum = parseInt(prop.area.replace(/[^\d]/g, ''));
+                  if (!isNaN(areaNum)) {
+                    context.lastSiteArea = areaNum;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Not JSON or not a property result, skip
+          }
+        }
+      }
+    }
+
+    // Look for property addresses (fallback for user-mentioned addresses)
     const addressMatch = content.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln)),?\s*([\w\s]+?)(?:,|\s+QLD|\s+\d{4}|$)/i);
-    if (addressMatch) {
+    if (addressMatch && !context.lastProperty) {
       context.lastProperty = addressMatch[0].trim();
       context.lastSuburb = addressMatch[2]?.trim();
     }
-    
+
     // Look for suburbs mentioned
     const suburbPatterns = [
       'mermaid waters', 'mermaid beach', 'broadbeach', 'surfers paradise',
@@ -157,31 +212,36 @@ function extractConversationContext(conversationHistory) {
         context.lastSuburb = suburb.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
       }
     }
-    
-    // Look for lotplan
+
+    // Look for lotplan (fallback)
     const lotplanMatch = content.match(/\b(\d+[A-Z]{2,4}\d+)\b/i);
-    if (lotplanMatch) {
+    if (lotplanMatch && !context.lastLotplan) {
       context.lastLotplan = lotplanMatch[1].toUpperCase();
     }
-    
-    // Look for site area
-    const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
-    if (areaMatch) {
-      context.lastSiteArea = parseInt(areaMatch[1]);
+
+    // Look for site area (fallback, only if not already set by property lookup)
+    if (!context.lastSiteArea) {
+      const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
+      if (areaMatch) {
+        context.lastSiteArea = parseInt(areaMatch[1]);
+      }
     }
-    
-    // Look for density codes
-    const densityMatch = content.match(/\b(RD[1-8])\b/i);
-    if (densityMatch) {
-      context.lastDensity = densityMatch[1].toUpperCase();
+
+    // CRITICAL: DO NOT extract density codes or height limits from general text
+    // These MUST come from get_property_info to avoid contamination from DA documents
+    // Only extract if planning controls haven't been locked by City Plan data
+    if (!planningControlsLocked) {
+      const densityMatch = content.match(/\b(RD[1-8])\b/i);
+      if (densityMatch && !context.lastDensity) {
+        context.lastDensity = densityMatch[1].toUpperCase();
+      }
+
+      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
+      if (heightMatch && !context.lastHeight) {
+        context.lastHeight = `${heightMatch[1]}m`;
+      }
     }
-    
-    // Look for height
-    const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
-    if (heightMatch) {
-      context.lastHeight = `${heightMatch[1]}m`;
-    }
-    
+
     // Detect development strategy from conversation
     if (contentLower.includes('renovate') || contentLower.includes('renovation') || contentLower.includes('update')) {
       context.developmentStrategy = 'renovation';
@@ -192,32 +252,32 @@ function extractConversationContext(conversationHistory) {
     if (contentLower.includes('subdivide') || contentLower.includes('subdivision')) {
       context.developmentStrategy = 'subdivision';
     }
-    
+
     // Detect existing units
     const unitsMatch = content.match(/(\d+)\s*(?:existing\s*)?units?|already\s*(?:has\s*)?(\d+)\s*units?|strata.*?(\d+)\s*units?/i);
     if (unitsMatch) {
       context.existingUnits = parseInt(unitsMatch[1] || unitsMatch[2] || unitsMatch[3]);
     }
-    
+
     // Look for "4 units" or "subdivided into X units"
     const strataUnitsMatch = content.match(/(?:subdivided|split|divided)\s*into\s*(\d+)\s*(?:strata\s*)?units?/i);
     if (strataUnitsMatch) {
       context.existingUnits = parseInt(strataUnitsMatch[1]);
       context.isStrata = true;
     }
-    
+
     // Detect strata
     if (contentLower.includes('strata') || contentLower.includes('body corp')) {
       context.isStrata = true;
     }
-    
+
     // Look for budget/price discussions
     const priceMatch = content.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:m(?:illion)?|k)?/gi);
     if (priceMatch) {
       context.priceDiscussed = priceMatch[priceMatch.length - 1]; // Most recent price
     }
   }
-  
+
   return context;
 }
 
@@ -465,7 +525,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'get_da_decision_notice',
-        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available).',
+        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available). CRITICAL: DA approvals show what was approved for a SPECIFIC APPLICATION - they do NOT change the underlying planning scheme controls (zone, height, density). Never say "the site\'s height limit is 45m" if 45m came from a DA approval - the actual planning control might be HX.',
         input_schema: {
           type: 'object',
           properties: {
@@ -685,6 +745,33 @@ CRITICAL RULES - FIGURES AND DATA:
   * Renovation/refurb: $1,000-$3,000/sqm
   * High-end fitout: $4,500-$10,000/sqm
   * ALWAYS say "Based on industry estimates - get a QS quote or check Rawlinsons for accurate costs"
+
+CRITICAL: PLANNING CONTROLS VS DA APPROVALS - DATA SOURCE PRECEDENCE
+=======================================================================
+PLANNING SCHEME CONTROLS (Zone, Height, Density, Overlays):
+- ONLY come from get_property_info tool (queries Gold Coast City Plan)
+- These are the UNDERLYING PLANNING RULES that apply to the land
+- Examples: "HX height control", "RD8 density", "Medium density residential zone"
+- NEVER override or change these based on DA documents
+
+DA DECISION NOTICES (Development Approvals):
+- Show what was APPROVED for a SPECIFIC APPLICATION
+- Examples: "Approved for 45m building height", "59 units approved"
+- These are project-specific, NOT planning scheme controls
+- A DA approving "45m height" does NOT mean the planning scheme control is "45m"
+- The planning scheme might say "HX", and the DA approved a variation to 45m via impact assessment
+
+CORRECT PHRASING:
+✓ "The site has an HX height control under the City Plan. The DA (MCU/2024/456) approved a 45-metre building via impact assessment."
+✓ "Planning scheme allows HX height. Previous DA achieved 45m approval."
+✓ "City Plan control: HX height limit. DA approval: 45m building (exceeded via impact assessment)."
+
+INCORRECT PHRASING (NEVER SAY THIS):
+✗ "The site's 45m height limit" (when 45m came from a DA, not City Plan)
+✗ "Height control is 45 metres" (when it's actually HX, and 45m was a DA approval)
+✗ Using DA-approved specs as if they're planning scheme controls
+
+RULE: Always distinguish between "what the planning scheme allows" vs "what a previous DA approved"
 
 PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 - If a proposal EXCEEDS planning scheme limits (density, height, setbacks etc), DO NOT say "you can't do this"
@@ -1102,7 +1189,14 @@ Focus on conditions that affect:
 - What must be completed before operation
 - Any significant amenities or requirements
 
-Be specific with numbers, hours, and requirements. Avoid generic statements.`
+Be specific with numbers, hours, and requirements. Avoid generic statements.
+
+CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
+- This DA shows what was APPROVED for this specific application
+- It does NOT change the underlying planning scheme controls (zone, height, density)
+- Example: If DA approves "45m building height", that's the APPROVED height for THIS project
+- The underlying City Plan control might still be "HX" - the DA achieved a variation
+- Never refer to DA-approved specs as if they're the planning scheme controls`
                     }
                   ]
                 }]
