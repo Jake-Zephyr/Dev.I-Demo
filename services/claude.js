@@ -761,6 +761,26 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
         enum: ['margin', 'fully_taxed'],
         description: 'GST treatment - margin scheme or fully taxed'
       },
+      gstCostBase: {
+        type: 'number',
+        description: 'If using margin scheme, the cost base for GST calculation (usually land value)'
+      },
+      buildCosts: {
+        type: 'number',
+        description: 'Base building costs (if provided separately from construction cost total)'
+      },
+      professionalFees: {
+        type: 'number',
+        description: 'Professional fees (if provided separately)'
+      },
+      statutoryFees: {
+        type: 'number',
+        description: 'Statutory/council fees (if provided separately)'
+      },
+      pmFees: {
+        type: 'number',
+        description: 'Project management fees (if provided separately)'
+      },
       targetMarginPercent: {
         type: 'number',
         description: 'Target profit margin percentage (default 20)'
@@ -978,6 +998,13 @@ When user chooses quick feasibility, collect inputs step by step. NEVER assume v
 Step 1: Project type (if not already known)
 "What type of project? [New build] [Knockdown rebuild] [Renovation]"
 
+ACCEPTING USER VARIATIONS FOR PROJECT TYPE:
+- "build" / "new build" / "new" → Accept as "New build"
+- "knockdown" / "knockdown rebuild" / "demolish and rebuild" / "demo" → Accept as "Knockdown rebuild"
+- "reno" / "renovation" / "renovate" / "refurb" → Accept as "Renovation"
+- "apartments" / "townhouses" / "units" → WRONG ANSWER - these are property types, not project types
+  * If user says this, use ask_clarification: "I need to know if this is a new build, knockdown rebuild, or renovation. Which one?"
+
 Step 2: Unit count and sizes
 "How many units and what sizes? E.g. '4 units at 150sqm each' or '3 x 200sqm + 1 x 300sqm penthouse'"
 
@@ -987,6 +1014,14 @@ Step 3: GRV (Gross Realisation Value)
 Step 4: Construction cost - NEVER ASSUME THIS
 "What's your total construction cost including professional fees, statutory fees, and contingency?"
 DO NOT suggest a $/sqm rate unless user explictly asks for market rates. Wait for user to provide their number.
+
+CRITICAL - HANDLING GROSS VS NET FLOOR AREA:
+- If user says they're building at "$8k/sqm on gross not net", they mean:
+  * Gross floor area INCLUDES common areas, lifts, basement, circulation (typically 25-35% of total)
+  * Net saleable area is SMALLER than gross (usually 65-75% of gross)
+- Ask: "So construction is $X per sqm of GROSS floor area. What's the total gross floor area including common areas?"
+- Then calculate: Construction cost = gross floor area × $/sqm rate
+- NEVER multiply net saleable area by a gross $/sqm rate - that's wrong!
 
 Step 5: Finance inputs - ASK ONE QUESTION AT A TIME
 "LVR (Loan to Value Ratio)? [60%] [70%] [80%] [Fully funded]"
@@ -1008,8 +1043,31 @@ CRITICAL - BUTTON FORMAT RULES:
 - Always present button options on the SAME LINE as the question
 - Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
 
+CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
+- If you ask a button question and user's answer doesn't match ANY option, use ask_clarification
+- Examples:
+  * Asked: "LVR? [60%] [70%] [80%] [Fully funded]"
+  * User says: "apartments" → WRONG, use ask_clarification: "I need to know your LVR - 60%, 70%, 80%, or fully funded?"
+  * User says: "yes" → WRONG, use ask_clarification: "Which LVR - 60%, 70%, 80%, or fully funded?"
+- Accept close variations:
+  * "fully funded" / "full fund" / "100%" / "100% lvr" → Accept as [Fully funded]
+  * "6.5" / "6.5%" → Accept as [6.5%]
+  * "three percent" / "3" → Accept as [3%]
+
 Step 7: Calculate
 Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
+
+CRITICAL - PRESENTING FEASIBILITY RESULTS:
+- When calculate_quick_feasibility tool completes, you receive a structured JSON result
+- ONLY use the numbers from the tool output - NEVER make up or recalculate numbers yourself
+- The tool output contains these fields (use them EXACTLY as provided):
+  * revenue.grvInclGST, revenue.grvExclGST, revenue.avgPricePerUnit
+  * costs.land, costs.construction, costs.selling, costs.finance, costs.holding, costs.total
+  * profitability.grossProfit, profitability.profitMargin, profitability.viability
+  * residual.residualLandValue
+- Present results in a clear, structured format showing revenue, costs, profit, and viability
+- If numbers look wrong or unexpected, DO NOT try to fix them - present what the tool returned
+- NEVER present different unit counts, GRVs, or costs than what's in the tool output
 
 CRITICAL RULES FOR QUICK FEASO:
 - NEVER assume construction costs - always ask the user
@@ -1020,6 +1078,38 @@ CRITICAL RULES FOR QUICK FEASO:
 - Accept variations: "fully funded" = "full fund" = "100% LVR"
 - Accept variations: "18 months" = "18mo" = "18m"
 - If user says "margin" for GST, that means margin scheme
+- CRITICAL: When user says "I already told you" or similar, review conversation history and find their answer
+- NEVER ask the same question twice - check conversation context first
+
+TRACKING INPUTS - BEFORE CALLING calculate_quick_feasibility:
+You MUST have ALL of these inputs:
+1. ✓ Number of units
+2. ✓ Unit sizes/mix (to calculate saleable area)
+3. ✓ GRV or $/sqm sale price
+4. ✓ Construction cost (total, including fees and contingency)
+5. ✓ LVR
+6. ✓ Interest rate
+7. ✓ Timeline in months
+8. ✓ Selling costs percentage
+9. ✓ GST scheme (and cost base if margin scheme)
+
+If ANY input is missing, ask for it. DO NOT call the tool until you have ALL inputs.
+When you have all inputs, call the tool immediately - don't summarize or delay.
+
+CALLING THE TOOL - REQUIRED PARAMETERS:
+- numUnits: Number from user
+- saleableArea: Calculate from unit mix (e.g., 50 × 250sqm + 9 × 400sqm = 16,100sqm)
+- grvTotal: Calculate from $/sqm × area OR total GRV (e.g., $25k/sqm × 16,100 = $402.5M)
+- constructionCost: Total from user (e.g., $171.7M)
+- lvr: As number 0-100 (e.g., 60 for 60%, 100 for fully funded)
+- interestRate: As number (e.g., 6.8 for 6.8%)
+- timelineMonths: As number (e.g., 32)
+- sellingCostsPercent: As number (e.g., 3 for 3%)
+- gstScheme: "margin" or "fully_taxed"
+- gstCostBase: REQUIRED if gstScheme is "margin" (e.g., 12000000 for $12M)
+- landValue: Land/property value if provided (otherwise 0)
+- propertyAddress: From context
+- projectType: "new_build", "knockdown_rebuild", or "renovation"
 
 ${contextSummary}
 
