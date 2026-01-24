@@ -2,6 +2,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
+import {
+  calculateLandTaxQLD,
+  calculateTargetMargin,
+  splitTimeline,
+  getDefaultSellingCosts
+} from './feasibility-calculator.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -1228,9 +1234,9 @@ Be specific with numbers, hours, and requirements. Avoid generic statements.`
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] Calculating quick feasibility');
   if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
+
   const input = toolUse.input;
-  
+
   // Get values from input
   const numUnits = input.numUnits;
   const saleableArea = input.saleableArea;
@@ -1242,73 +1248,164 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   const timelineMonths = input.timelineMonths;
   const sellingCostsPercent = input.sellingCostsPercent;
   const gstScheme = input.gstScheme || 'margin';
-  const targetMarginPercent = input.targetMarginPercent || 20;
+  const gstCostBase = input.gstCostBase || landValue;
   const contingencyIncluded = input.contingencyIncluded !== false;
-  
+
+  // Get property context
+  const propertyAddress = input.propertyAddress || conversationContext.lastProperty || '';
+  const siteArea = input.siteArea || conversationContext.lastSiteArea || 0;
+  const densityCode = input.densityCode || conversationContext.lastDensity || '';
+  const heightLimit = input.heightLimit || conversationContext.lastHeight || '';
+
   // Add contingency if not included
-  const constructionWithContingency = contingencyIncluded 
-    ? constructionCost 
+  const contingencyPercent = contingencyIncluded ? 0 : 5;
+  const constructionWithContingency = contingencyIncluded
+    ? constructionCost
     : constructionCost * 1.05;
-  
+
   // Convert percentages to decimals
   const lvrDecimal = lvr / 100;
   const interestDecimal = interestRate / 100;
   const sellingDecimal = sellingCostsPercent / 100;
-  const targetMarginDecimal = targetMarginPercent / 100;
-  
+
   // Calculate GST
   let grvExclGST;
-  if (gstScheme === 'margin' && landValue > 0) {
-    const margin = grvTotal - landValue;
-    const gstPayable = margin / 11;
+  let gstPayable;
+  if (gstScheme === 'margin' && gstCostBase > 0) {
+    const margin = grvTotal - gstCostBase;
+    gstPayable = margin / 11;
     grvExclGST = grvTotal - gstPayable;
   } else if (gstScheme === 'fully_taxed') {
+    gstPayable = grvTotal / 11;
     grvExclGST = grvTotal / 1.1;
   } else {
-    // Default to simple /1.1 if no land value for margin calc
+    // Default to simple /1.1 if no cost base for margin calc
+    gstPayable = grvTotal / 11;
     grvExclGST = grvTotal / 1.1;
   }
-  
+
+  // Determine target margin based on GRV
+  const defaultTargetMargin = calculateTargetMargin(grvExclGST);
+  const targetMarginPercent = input.targetMarginPercent || defaultTargetMargin;
+  const targetMarginDecimal = targetMarginPercent / 100;
+
+  // Get default selling costs breakdown
+  const sellingDefaults = getDefaultSellingCosts();
+
   // Calculate costs
   const sellingCosts = grvExclGST * sellingDecimal;
-  
+
+  // Calculate holding costs based on land value
+  const landTaxYearly = calculateLandTaxQLD(landValue);
+  const councilRatesAnnual = 5000;
+  const waterRatesAnnual = 1400;
+  const totalHoldingYearly = landTaxYearly + councilRatesAnnual + waterRatesAnnual;
+  const holdingCosts = totalHoldingYearly * (timelineMonths / 12);
+
   // Finance costs (50% average debt outstanding)
   const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
   const avgDebt = totalDebt * 0.5;
   const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-  
+
   // Total costs and profit
-  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts;
+  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts + holdingCosts;
   const grossProfit = grvExclGST - totalCost;
   const profitMargin = (grossProfit / grvExclGST) * 100;
-  
+
   // Calculate residual land value at target margin
   const targetProfit = grvExclGST * targetMarginDecimal;
   let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
-  
+
   // Iterate to account for finance costs on land
   for (let i = 0; i < 5; i++) {
     const residualDebt = (residualLandValue + constructionWithContingency) * lvrDecimal;
     const residualAvgDebt = residualDebt * 0.5;
     const residualFinanceCosts = residualAvgDebt * interestDecimal * (timelineMonths / 12);
-    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - targetProfit;
+    const residualHoldingCosts = totalHoldingYearly * (timelineMonths / 12);
+    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - residualHoldingCosts - targetProfit;
   }
-  
+
   // Determine viability
   let viability;
   if (profitMargin >= 25) viability = 'viable';
   else if (profitMargin >= 20) viability = 'marginal';
   else if (profitMargin >= 15) viability = 'challenging';
   else viability = 'not_viable';
-  
+
+  // Split timeline into phases
+  const timeline = splitTimeline(timelineMonths);
+
+  // Parse professional fees, statutory fees, PM fees from construction cost
+  // These are typically provided as part of construction cost breakdown
+  const professionalFees = input.professionalFees || 0;
+  const statutoryFees = input.statutoryFees || 0;
+  const pmFees = input.pmFees || 0;
+  const buildCosts = input.buildCosts || (constructionCost - professionalFees - statutoryFees - pmFees);
+
   if (sendProgress) sendProgress('✅ Feasibility calculated');
-  
+
+  // BUILD CALCULATOR PRE-FILL OBJECT
+  // This object maps directly to the detailed form field names
+  const calculatorPreFill = {
+    // Property (from property lookup, NOT user input)
+    property: propertyAddress,
+    siteArea: siteArea,  // Actual land parcel size in sqm
+    densityCode: densityCode,
+    heightLimit: heightLimit,
+
+    // Project (from user input)
+    numUnits: numUnits,
+    unitMix: input.unitMix || `${numUnits} units`,
+    saleableArea: saleableArea,  // Total unit floor area - DIFFERENT from siteArea
+
+    // Revenue
+    grvInclGST: Math.round(grvTotal),
+
+    // Acquisition
+    landValue: Math.round(landValue),
+    gstScheme: gstScheme,
+    gstCostBase: Math.round(gstCostBase),
+
+    // Construction (user provided or defaults)
+    buildCosts: Math.round(buildCosts),
+    contingencyPercent: contingencyPercent,
+    professionalFees: Math.round(professionalFees),
+    statutoryFees: Math.round(statutoryFees),
+    pmFees: Math.round(pmFees),
+
+    // Holding (apply defaults based on land value)
+    landTaxYearly: Math.round(landTaxYearly),
+    councilRatesAnnual: councilRatesAnnual,
+    waterRatesAnnual: waterRatesAnnual,
+
+    // Selling (use defaults or user-provided)
+    agentFeesPercent: sellingDefaults.agentFeesPercent,
+    marketingPercent: sellingDefaults.marketingPercent,
+    legalSellingPercent: sellingDefaults.legalSellingPercent,
+
+    // Finance
+    lvr: lvr,
+    interestRate: interestRate,
+
+    // Timeline
+    totalMonths: timeline.totalMonths,
+    leadInMonths: timeline.leadInMonths,
+    constructionMonths: timeline.constructionMonths,
+    sellingMonths: timeline.sellingMonths,
+
+    // Target
+    targetMargin: targetMarginPercent
+  };
+
   toolResult = {
     success: true,
     feasibilityMode: 'results',
-    
+
+    // NEW: Include calculatorPreFill for form/PDF
+    calculatorPreFill: calculatorPreFill,
+
     inputs: {
-      address: input.propertyAddress || conversationContext.lastProperty,
+      address: propertyAddress,
       projectType: input.projectType,
       numUnits: numUnits,
       unitMix: input.unitMix,
@@ -1322,21 +1419,23 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       sellingCostsPercent: sellingCostsPercent,
       gstScheme: gstScheme
     },
-    
+
     revenue: {
-      grvInclGST: grvTotal,
+      grvInclGST: Math.round(grvTotal),
       grvExclGST: Math.round(grvExclGST),
+      gstPayable: Math.round(gstPayable),
       avgPricePerUnit: Math.round(grvTotal / numUnits)
     },
-    
+
     costs: {
-      land: landValue,
+      land: Math.round(landValue),
       construction: Math.round(constructionWithContingency),
       selling: Math.round(sellingCosts),
       finance: Math.round(financeCosts),
+      holding: Math.round(holdingCosts),
       total: Math.round(totalCost)
     },
-    
+
     profitability: {
       grossProfit: Math.round(grossProfit),
       profitMargin: Math.round(profitMargin * 10) / 10,
@@ -1344,17 +1443,19 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       meetsTarget: profitMargin >= targetMarginPercent,
       viability: viability
     },
-    
+
     residual: {
       residualLandValue: Math.round(residualLandValue),
       vsActualLand: landValue > 0 ? Math.round(residualLandValue - landValue) : null
     },
-    
+
     assumptions: {
       contingency: contingencyIncluded ? 'Included in construction' : 'Added 5%',
       financeDrawProfile: '50% average outstanding',
-      stampDuty: 'Excluded',
-      holdingCosts: 'Excluded'
+      landTax: `$${Math.round(landTaxYearly).toLocaleString()}/year`,
+      councilRates: `$${councilRatesAnnual.toLocaleString()}/year`,
+      waterRates: `$${waterRatesAnnual.toLocaleString()}/year`,
+      targetMarginBasis: grvExclGST < 15000000 ? 'GRV under $15M → 15%' : 'GRV $15M+ → 20%'
     }
   };
 }
