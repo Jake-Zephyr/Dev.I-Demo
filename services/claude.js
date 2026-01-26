@@ -2,6 +2,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
+import {
+  calculateLandTaxQLD,
+  calculateTargetMargin,
+  splitTimeline,
+  getDefaultSellingCosts
+} from './feasibility-calculator.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -122,23 +128,78 @@ function extractConversationContext(conversationHistory) {
     priceDiscussed: null,
     budgetRange: null
   };
-  
+
   if (!conversationHistory || conversationHistory.length === 0) {
     return context;
   }
-  
+
+  // Track if planning controls have been set from City Plan (get_property_info)
+  // Once set, they should NOT be overridden by DA documents
+  let planningControlsLocked = false;
+
   // Scan through history looking for property data and strategy signals
   for (const msg of conversationHistory) {
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
     const contentLower = content.toLowerCase();
-    
-    // Look for property addresses
+
+    // CRITICAL: Extract planning controls ONLY from get_property_info tool results
+    // This prevents DA documents from contaminating City Plan data
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          try {
+            const toolResultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+
+            // Check if this looks like a property lookup result
+            if (toolResultText.includes('"success":true') && toolResultText.includes('"property":{')) {
+              const toolResult = JSON.parse(toolResultText);
+
+              if (toolResult.success && toolResult.property) {
+                const prop = toolResult.property;
+
+                // Set planning controls (from City Plan - IMMUTABLE)
+                if (prop.zone) {
+                  context.lastZone = prop.zone;
+                  planningControlsLocked = true;
+                }
+                if (prop.density) {
+                  context.lastDensity = prop.density;
+                  planningControlsLocked = true;
+                }
+                if (prop.height) {
+                  context.lastHeight = prop.height;
+                  planningControlsLocked = true;
+                }
+
+                // Also extract basic property info
+                if (prop.address) {
+                  context.lastProperty = prop.address;
+                }
+                if (prop.lotplan) {
+                  context.lastLotplan = prop.lotplan;
+                }
+                if (prop.area) {
+                  const areaNum = parseInt(prop.area.replace(/[^\d]/g, ''));
+                  if (!isNaN(areaNum)) {
+                    context.lastSiteArea = areaNum;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Not JSON or not a property result, skip
+          }
+        }
+      }
+    }
+
+    // Look for property addresses (fallback for user-mentioned addresses)
     const addressMatch = content.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln)),?\s*([\w\s]+?)(?:,|\s+QLD|\s+\d{4}|$)/i);
-    if (addressMatch) {
+    if (addressMatch && !context.lastProperty) {
       context.lastProperty = addressMatch[0].trim();
       context.lastSuburb = addressMatch[2]?.trim();
     }
-    
+
     // Look for suburbs mentioned
     const suburbPatterns = [
       'mermaid waters', 'mermaid beach', 'broadbeach', 'surfers paradise',
@@ -151,31 +212,36 @@ function extractConversationContext(conversationHistory) {
         context.lastSuburb = suburb.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
       }
     }
-    
-    // Look for lotplan
+
+    // Look for lotplan (fallback)
     const lotplanMatch = content.match(/\b(\d+[A-Z]{2,4}\d+)\b/i);
-    if (lotplanMatch) {
+    if (lotplanMatch && !context.lastLotplan) {
       context.lastLotplan = lotplanMatch[1].toUpperCase();
     }
-    
-    // Look for site area
-    const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
-    if (areaMatch) {
-      context.lastSiteArea = parseInt(areaMatch[1]);
+
+    // Look for site area (fallback, only if not already set by property lookup)
+    if (!context.lastSiteArea) {
+      const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
+      if (areaMatch) {
+        context.lastSiteArea = parseInt(areaMatch[1]);
+      }
     }
-    
-    // Look for density codes
-    const densityMatch = content.match(/\b(RD[1-8])\b/i);
-    if (densityMatch) {
-      context.lastDensity = densityMatch[1].toUpperCase();
+
+    // CRITICAL: DO NOT extract density codes or height limits from general text
+    // These MUST come from get_property_info to avoid contamination from DA documents
+    // Only extract if planning controls haven't been locked by City Plan data
+    if (!planningControlsLocked) {
+      const densityMatch = content.match(/\b(RD[1-8])\b/i);
+      if (densityMatch && !context.lastDensity) {
+        context.lastDensity = densityMatch[1].toUpperCase();
+      }
+
+      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
+      if (heightMatch && !context.lastHeight) {
+        context.lastHeight = `${heightMatch[1]}m`;
+      }
     }
-    
-    // Look for height
-    const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
-    if (heightMatch) {
-      context.lastHeight = `${heightMatch[1]}m`;
-    }
-    
+
     // Detect development strategy from conversation
     if (contentLower.includes('renovate') || contentLower.includes('renovation') || contentLower.includes('update')) {
       context.developmentStrategy = 'renovation';
@@ -186,33 +252,100 @@ function extractConversationContext(conversationHistory) {
     if (contentLower.includes('subdivide') || contentLower.includes('subdivision')) {
       context.developmentStrategy = 'subdivision';
     }
-    
+
     // Detect existing units
     const unitsMatch = content.match(/(\d+)\s*(?:existing\s*)?units?|already\s*(?:has\s*)?(\d+)\s*units?|strata.*?(\d+)\s*units?/i);
     if (unitsMatch) {
       context.existingUnits = parseInt(unitsMatch[1] || unitsMatch[2] || unitsMatch[3]);
     }
-    
+
     // Look for "4 units" or "subdivided into X units"
     const strataUnitsMatch = content.match(/(?:subdivided|split|divided)\s*into\s*(\d+)\s*(?:strata\s*)?units?/i);
     if (strataUnitsMatch) {
       context.existingUnits = parseInt(strataUnitsMatch[1]);
       context.isStrata = true;
     }
-    
+
     // Detect strata
     if (contentLower.includes('strata') || contentLower.includes('body corp')) {
       context.isStrata = true;
     }
-    
+
     // Look for budget/price discussions
     const priceMatch = content.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:m(?:illion)?|k)?/gi);
     if (priceMatch) {
       context.priceDiscussed = priceMatch[priceMatch.length - 1]; // Most recent price
     }
   }
-  
+
   return context;
+}
+
+/**
+ * Detect and parse button options from Claude's response
+ * Looks for patterns like "[Option 1] [Option 2] [Option 3]"
+ * Returns array of button options if found, null otherwise
+ */
+function parseButtonOptions(text) {
+  if (!text) return null;
+
+  // Match pattern like "[60%] [70%] [80%] [Fully funded]"
+  const buttonPattern = /\[([^\]]+)\](?:\s*\[([^\]]+)\])+/g;
+  const matches = [...text.matchAll(buttonPattern)];
+
+  if (matches.length === 0) return null;
+
+  // Extract all button options from the text
+  const allButtons = [];
+  for (const match of matches) {
+    // Get the full match and extract all individual buttons
+    const fullMatch = match[0];
+    const individualButtons = fullMatch.match(/\[([^\]]+)\]/g);
+
+    if (individualButtons) {
+      for (const btn of individualButtons) {
+        const buttonText = btn.replace(/[\[\]]/g, '').trim();
+        if (buttonText && !allButtons.includes(buttonText)) {
+          allButtons.push(buttonText);
+        }
+      }
+    }
+  }
+
+  return allButtons.length > 0 ? allButtons : null;
+}
+
+/**
+ * Determine the question type/context for button options
+ * This helps the frontend show appropriate follow-up inputs
+ */
+function detectQuestionContext(text, buttons) {
+  if (!text || !buttons) return null;
+
+  const lowerText = text.toLowerCase();
+
+  // Detect question type based on content
+  if (lowerText.includes('lvr') || lowerText.includes('loan to value')) {
+    return { type: 'lvr', label: 'LVR (Loan to Value Ratio)' };
+  }
+  if (lowerText.includes('interest rate')) {
+    return { type: 'interest_rate', label: 'Interest Rate', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('selling cost')) {
+    return { type: 'selling_costs', label: 'Selling Costs', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('gst') && (lowerText.includes('scheme') || lowerText.includes('treatment'))) {
+    return {
+      type: 'gst_scheme',
+      label: 'GST Treatment',
+      needsFollowUp: buttons.some(b => b.toLowerCase().includes('margin'))
+    };
+  }
+  if (lowerText.includes('project type') || lowerText.includes('type of project')) {
+    return { type: 'project_type', label: 'Project Type' };
+  }
+
+  return { type: 'general', label: 'Select an option' };
 }
 
 /**
@@ -459,7 +592,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'get_da_decision_notice',
-        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available).',
+        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available). CRITICAL: DA approvals show what was approved for a SPECIFIC APPLICATION - they do NOT change the underlying planning scheme controls (zone, height, density). Never say "the site\'s height limit is 45m" if 45m came from a DA approval - the actual planning control might be HX.',
         input_schema: {
           type: 'object',
           properties: {
@@ -628,6 +761,26 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
         enum: ['margin', 'fully_taxed'],
         description: 'GST treatment - margin scheme or fully taxed'
       },
+      gstCostBase: {
+        type: 'number',
+        description: 'If using margin scheme, the cost base for GST calculation (usually land value)'
+      },
+      buildCosts: {
+        type: 'number',
+        description: 'Base building costs (if provided separately from construction cost total)'
+      },
+      professionalFees: {
+        type: 'number',
+        description: 'Professional fees (if provided separately)'
+      },
+      statutoryFees: {
+        type: 'number',
+        description: 'Statutory/council fees (if provided separately)'
+      },
+      pmFees: {
+        type: 'number',
+        description: 'Project management fees (if provided separately)'
+      },
       targetMarginPercent: {
         type: 'number',
         description: 'Target profit margin percentage (default 20)'
@@ -679,6 +832,33 @@ CRITICAL RULES - FIGURES AND DATA:
   * Renovation/refurb: $1,000-$3,000/sqm
   * High-end fitout: $4,500-$10,000/sqm
   * ALWAYS say "Based on industry estimates - get a QS quote or check Rawlinsons for accurate costs"
+
+CRITICAL: PLANNING CONTROLS VS DA APPROVALS - DATA SOURCE PRECEDENCE
+=======================================================================
+PLANNING SCHEME CONTROLS (Zone, Height, Density, Overlays):
+- ONLY come from get_property_info tool (queries Gold Coast City Plan)
+- These are the UNDERLYING PLANNING RULES that apply to the land
+- Examples: "HX height control", "RD8 density", "Medium density residential zone"
+- NEVER override or change these based on DA documents
+
+DA DECISION NOTICES (Development Approvals):
+- Show what was APPROVED for a SPECIFIC APPLICATION
+- Examples: "Approved for 45m building height", "59 units approved"
+- These are project-specific, NOT planning scheme controls
+- A DA approving "45m height" does NOT mean the planning scheme control is "45m"
+- The planning scheme might say "HX", and the DA approved a variation to 45m via impact assessment
+
+CORRECT PHRASING:
+✓ "The site has an HX height control under the City Plan. The DA (MCU/2024/456) approved a 45-metre building via impact assessment."
+✓ "Planning scheme allows HX height. Previous DA achieved 45m approval."
+✓ "City Plan control: HX height limit. DA approval: 45m building (exceeded via impact assessment)."
+
+INCORRECT PHRASING (NEVER SAY THIS):
+✗ "The site's 45m height limit" (when 45m came from a DA, not City Plan)
+✗ "Height control is 45 metres" (when it's actually HX, and 45m was a DA approval)
+✗ Using DA-approved specs as if they're planning scheme controls
+
+RULE: Always distinguish between "what the planning scheme allows" vs "what a previous DA approved"
 
 PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 - If a proposal EXCEEDS planning scheme limits (density, height, setbacks etc), DO NOT say "you can't do this"
@@ -818,29 +998,96 @@ When user chooses quick feasibility, collect inputs step by step. NEVER assume v
 Step 1: Project type (if not already known)
 "What type of project? [New build] [Knockdown rebuild] [Renovation]"
 
-Step 2: Unit count and sizes
-"How many units and what sizes? E.g. '4 units at 150sqm each' or '3 x 200sqm + 1 x 300sqm penthouse'"
+ACCEPTING USER VARIATIONS FOR PROJECT TYPE:
+- "build" / "new build" / "new" → Accept as "New build"
+- "knockdown" / "knockdown rebuild" / "demolish and rebuild" / "demo" → Accept as "Knockdown rebuild"
+- "reno" / "renovation" / "renovate" / "refurb" → Accept as "Renovation"
+- "apartments" / "townhouses" / "units" → WRONG ANSWER - these are property types, not project types
+  * If user says this, use ask_clarification: "I need to know if this is a new build, knockdown rebuild, or renovation. Which one?"
 
-Step 3: GRV (Gross Realisation Value)
-"What's your target sale price? [$/sqm rate] [$ per unit] [$ total GRV]"
+Step 2: GRV (Gross Realisation Value) - ASK THIS FIRST
+"What's your target gross revenue (GRV)? For example: '$10M total' or '$5,000/sqm'"
 
-Step 4: Construction cost - NEVER ASSUME THIS
+CRITICAL - USER CAN SKIP UNIT MIX:
+- If user provides total GRV (e.g., "$10M"), you don't need unit count or sizes
+- Only ask for unit mix if user provides $/sqm rate (you'll need saleable area to calculate total)
+- For the calculation tool:
+  * If total GRV provided: use numUnits = 1, saleableArea = 1, grvTotal = their amount
+  * If $/sqm provided: ask for saleable area, then calculate grvTotal = rate × area
+
+Step 3: Construction cost - NEVER ASSUME THIS
 "What's your total construction cost including professional fees, statutory fees, and contingency?"
-DO NOT suggest a $/sqm rate unless user explictly asks for market rates. Wait for user to provide their number.
+DO NOT suggest a $/sqm rate unless user explicitly asks for market rates. Wait for user to provide their number.
 
-Step 5: Finance inputs
-"Finance details:
-- LVR? [60%] [70%] [80%] [Fully funded]
-- Interest rate?
-- Project timeline in months?"
+CRITICAL - HANDLING GROSS VS NET FLOOR AREA:
+- If user says they're building at "$8k/sqm on gross not net", they mean:
+  * Gross floor area INCLUDES common areas, lifts, basement, circulation (typically 25-35% of total)
+  * Net saleable area is SMALLER than gross (usually 65-75% of gross)
+- Ask: "So construction is $X per sqm of GROSS floor area. What's the total gross floor area including common areas?"
+- Then calculate: Construction cost = gross floor area × $/sqm rate
+- NEVER multiply net saleable area by a gross $/sqm rate - that's wrong!
 
-Step 6: Other costs
-"- Selling costs (agent + marketing)? [3%] [4%] [Custom]
-- GST treatment? [Margin scheme] [Fully taxed]"
-multiple choice options appear as buttons. If user selects Margin Scheme, make the button open a chat box for the user to input what the project's cost base will be and say: "What is the project's cost base for Margin Scheme purposes?"
+Step 4: Finance inputs - ASK ONE QUESTION AT A TIME
+"LVR (Loan to Value Ratio)? [60%] [70%] [80%] [Fully funded]"
+Then after they answer:
+"Interest rate? [6.5%] [7.0%] [7.5%] [Custom]"
+Then after they answer:
+"Project timeline in months?" (text input - user types number)
+
+Step 5: Other costs - ASK ONE QUESTION AT A TIME
+"Selling costs (agent + marketing)? [3%] [4%] [Custom]"
+Then after they answer:
+"GST treatment? [Margin scheme] [Fully taxed]"
+
+CRITICAL - BUTTON FORMAT RULES:
+- Multiple choice options MUST be in square brackets like [Option 1] [Option 2] [Option 3]
+- The frontend will detect [text] patterns and render them as clickable buttons
+- ALWAYS use brackets for GST question: "GST treatment? [Margin scheme] [Fully taxed]"
+- NEVER format as a list without brackets:
+  * WRONG: "GST treatment:\n- Margin scheme\n- Fully taxed"
+  * CORRECT: "GST treatment? [Margin scheme] [Fully taxed]"
+- If user clicks [Custom] for interest rate or selling costs, then ask for their custom value
+- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes?"
+- Always present button options on the SAME LINE as the question
+- Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
+
+CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
+- If you ask a button question and user's answer doesn't match ANY option, use ask_clarification
+- Examples:
+  * Asked: "LVR? [60%] [70%] [80%] [Fully funded]"
+  * User says: "apartments" → WRONG, use ask_clarification: "I need to know your LVR - 60%, 70%, 80%, or fully funded?"
+  * User says: "yes" → WRONG, use ask_clarification: "Which LVR - 60%, 70%, 80%, or fully funded?"
+- Accept close variations:
+  * "fully funded" / "full fund" / "100%" / "100% lvr" → Accept as [Fully funded]
+  * "6.5" / "6.5%" → Accept as [6.5%]
+  * "three percent" / "3" → Accept as [3%]
 
 Step 7: Calculate
 Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
+
+CRITICAL - PRESENTING FEASIBILITY RESULTS:
+⚠️ ABSOLUTE RULES - NEVER VIOLATE THESE:
+1. You MUST call calculate_quick_feasibility tool - do NOT calculate manually
+2. You MUST present ONLY what the tool returns - NEVER make up numbers
+3. If the tool fails or returns an error, say "I couldn't calculate the feasibility. Please try again."
+4. NEVER present different numbers than the tool output - this includes:
+   - Unit counts (use inputs.numUnits from tool result)
+   - GRV (use revenue.grvInclGST from tool result)
+   - Construction costs (use costs.construction from tool result)
+   - Profit/loss (use profitability.grossProfit from tool result)
+
+The tool output contains these fields (use them EXACTLY):
+- inputs.numUnits, inputs.saleableArea, inputs.constructionCost
+- revenue.grvInclGST, revenue.grvExclGST, revenue.avgPricePerUnit
+- costs.land, costs.construction, costs.selling, costs.finance, costs.holding, costs.total
+- profitability.grossProfit, profitability.profitMargin, profitability.viability
+- residual.residualLandValue
+
+VERIFICATION BEFORE PRESENTING:
+- Check: Does revenue.grvInclGST match what user told you?
+- Check: Does costs.construction match what user told you?
+- If NO: The tool may have failed - tell user "The calculation returned unexpected results. Let me try again."
+- If YES: Present the results exactly as tool returned them
 
 CRITICAL RULES FOR QUICK FEASO:
 - NEVER assume construction costs - always ask the user
@@ -851,6 +1098,49 @@ CRITICAL RULES FOR QUICK FEASO:
 - Accept variations: "fully funded" = "full fund" = "100% LVR"
 - Accept variations: "18 months" = "18mo" = "18m"
 - If user says "margin" for GST, that means margin scheme
+- CRITICAL: When user says "I already told you" or similar, review conversation history and find their answer
+- NEVER ask the same question twice - check conversation context first
+
+TRACKING INPUTS - BEFORE CALLING calculate_quick_feasibility:
+You MUST have ALL of these inputs:
+1. ✓ GRV (total amount, e.g., "$10M" OR $/sqm rate)
+2. ✓ Construction cost (total, including fees and contingency)
+3. ✓ LVR
+4. ✓ Interest rate
+5. ✓ Timeline in months
+6. ✓ Selling costs percentage
+7. ✓ GST scheme (and cost base if margin scheme)
+
+OPTIONAL INPUTS (only if user provides $/sqm rate):
+- Number of units (if $/sqm provided, need saleable area to calculate total GRV)
+- Unit sizes/mix (if $/sqm provided, need saleable area to calculate total GRV)
+
+If ANY required input is missing, ask for it. DO NOT call the tool until you have ALL required inputs.
+When you have all inputs, call the tool immediately - don't summarize or delay.
+
+CALLING THE TOOL - REQUIRED PARAMETERS:
+TWO SCENARIOS:
+A) User provided total GRV (e.g., "$10M total"):
+   - numUnits: 1
+   - saleableArea: 1
+   - grvTotal: User's total amount (e.g., 10000000)
+
+B) User provided $/sqm rate (e.g., "$25k/sqm"):
+   - numUnits: Number from user
+   - saleableArea: Calculate from unit mix (e.g., 50 × 250sqm + 9 × 400sqm = 16,100sqm)
+   - grvTotal: Calculate from $/sqm × area (e.g., $25k/sqm × 16,100 = $402.5M)
+
+ALL OTHER PARAMETERS (same for both scenarios):
+- constructionCost: Total from user (e.g., $171.7M)
+- lvr: As number 0-100 (e.g., 60 for 60%, 100 for fully funded)
+- interestRate: As number (e.g., 6.8 for 6.8%)
+- timelineMonths: As number (e.g., 32)
+- sellingCostsPercent: As number (e.g., 3 for 3%)
+- gstScheme: "margin" or "fully_taxed"
+- gstCostBase: REQUIRED if gstScheme is "margin" (e.g., 12000000 for $12M)
+- landValue: Land/property value if provided (otherwise 0)
+- propertyAddress: From context
+- projectType: "new_build", "knockdown_rebuild", or "renovation"
 
 ${contextSummary}
 
@@ -1096,7 +1386,14 @@ Focus on conditions that affect:
 - What must be completed before operation
 - Any significant amenities or requirements
 
-Be specific with numbers, hours, and requirements. Avoid generic statements.`
+Be specific with numbers, hours, and requirements. Avoid generic statements.
+
+CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
+- This DA shows what was APPROVED for this specific application
+- It does NOT change the underlying planning scheme controls (zone, height, density)
+- Example: If DA approves "45m building height", that's the APPROVED height for THIS project
+- The underlying City Plan control might still be "HX" - the DA achieved a variation
+- Never refer to DA-approved specs as if they're the planning scheme controls`
                     }
                   ]
                 }]
@@ -1228,9 +1525,9 @@ Be specific with numbers, hours, and requirements. Avoid generic statements.`
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] Calculating quick feasibility');
   if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
+
   const input = toolUse.input;
-  
+
   // Get values from input
   const numUnits = input.numUnits;
   const saleableArea = input.saleableArea;
@@ -1242,73 +1539,164 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   const timelineMonths = input.timelineMonths;
   const sellingCostsPercent = input.sellingCostsPercent;
   const gstScheme = input.gstScheme || 'margin';
-  const targetMarginPercent = input.targetMarginPercent || 20;
+  const gstCostBase = input.gstCostBase || landValue;
   const contingencyIncluded = input.contingencyIncluded !== false;
-  
+
+  // Get property context
+  const propertyAddress = input.propertyAddress || conversationContext.lastProperty || '';
+  const siteArea = input.siteArea || conversationContext.lastSiteArea || 0;
+  const densityCode = input.densityCode || conversationContext.lastDensity || '';
+  const heightLimit = input.heightLimit || conversationContext.lastHeight || '';
+
   // Add contingency if not included
-  const constructionWithContingency = contingencyIncluded 
-    ? constructionCost 
+  const contingencyPercent = contingencyIncluded ? 0 : 5;
+  const constructionWithContingency = contingencyIncluded
+    ? constructionCost
     : constructionCost * 1.05;
-  
+
   // Convert percentages to decimals
   const lvrDecimal = lvr / 100;
   const interestDecimal = interestRate / 100;
   const sellingDecimal = sellingCostsPercent / 100;
-  const targetMarginDecimal = targetMarginPercent / 100;
-  
+
   // Calculate GST
   let grvExclGST;
-  if (gstScheme === 'margin' && landValue > 0) {
-    const margin = grvTotal - landValue;
-    const gstPayable = margin / 11;
+  let gstPayable;
+  if (gstScheme === 'margin' && gstCostBase > 0) {
+    const margin = grvTotal - gstCostBase;
+    gstPayable = margin / 11;
     grvExclGST = grvTotal - gstPayable;
   } else if (gstScheme === 'fully_taxed') {
+    gstPayable = grvTotal / 11;
     grvExclGST = grvTotal / 1.1;
   } else {
-    // Default to simple /1.1 if no land value for margin calc
+    // Default to simple /1.1 if no cost base for margin calc
+    gstPayable = grvTotal / 11;
     grvExclGST = grvTotal / 1.1;
   }
-  
+
+  // Determine target margin based on GRV
+  const defaultTargetMargin = calculateTargetMargin(grvExclGST);
+  const targetMarginPercent = input.targetMarginPercent || defaultTargetMargin;
+  const targetMarginDecimal = targetMarginPercent / 100;
+
+  // Get default selling costs breakdown
+  const sellingDefaults = getDefaultSellingCosts();
+
   // Calculate costs
   const sellingCosts = grvExclGST * sellingDecimal;
-  
+
+  // Calculate holding costs based on land value
+  const landTaxYearly = calculateLandTaxQLD(landValue);
+  const councilRatesAnnual = 5000;
+  const waterRatesAnnual = 1400;
+  const totalHoldingYearly = landTaxYearly + councilRatesAnnual + waterRatesAnnual;
+  const holdingCosts = totalHoldingYearly * (timelineMonths / 12);
+
   // Finance costs (50% average debt outstanding)
   const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
   const avgDebt = totalDebt * 0.5;
   const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-  
+
   // Total costs and profit
-  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts;
+  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts + holdingCosts;
   const grossProfit = grvExclGST - totalCost;
   const profitMargin = (grossProfit / grvExclGST) * 100;
-  
+
   // Calculate residual land value at target margin
   const targetProfit = grvExclGST * targetMarginDecimal;
   let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
-  
+
   // Iterate to account for finance costs on land
   for (let i = 0; i < 5; i++) {
     const residualDebt = (residualLandValue + constructionWithContingency) * lvrDecimal;
     const residualAvgDebt = residualDebt * 0.5;
     const residualFinanceCosts = residualAvgDebt * interestDecimal * (timelineMonths / 12);
-    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - targetProfit;
+    const residualHoldingCosts = totalHoldingYearly * (timelineMonths / 12);
+    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - residualHoldingCosts - targetProfit;
   }
-  
+
   // Determine viability
   let viability;
   if (profitMargin >= 25) viability = 'viable';
   else if (profitMargin >= 20) viability = 'marginal';
   else if (profitMargin >= 15) viability = 'challenging';
   else viability = 'not_viable';
-  
+
+  // Split timeline into phases
+  const timeline = splitTimeline(timelineMonths);
+
+  // Parse professional fees, statutory fees, PM fees from construction cost
+  // These are typically provided as part of construction cost breakdown
+  const professionalFees = input.professionalFees || 0;
+  const statutoryFees = input.statutoryFees || 0;
+  const pmFees = input.pmFees || 0;
+  const buildCosts = input.buildCosts || (constructionCost - professionalFees - statutoryFees - pmFees);
+
   if (sendProgress) sendProgress('✅ Feasibility calculated');
-  
+
+  // BUILD CALCULATOR PRE-FILL OBJECT
+  // This object maps directly to the detailed form field names
+  const calculatorPreFill = {
+    // Property (from property lookup, NOT user input)
+    property: propertyAddress,
+    siteArea: siteArea,  // Actual land parcel size in sqm
+    densityCode: densityCode,
+    heightLimit: heightLimit,
+
+    // Project (from user input)
+    numUnits: numUnits,
+    unitMix: input.unitMix || `${numUnits} units`,
+    saleableArea: saleableArea,  // Total unit floor area - DIFFERENT from siteArea
+
+    // Revenue
+    grvInclGST: Math.round(grvTotal),
+
+    // Acquisition
+    landValue: Math.round(landValue),
+    gstScheme: gstScheme,
+    gstCostBase: Math.round(gstCostBase),
+
+    // Construction (user provided or defaults)
+    buildCosts: Math.round(buildCosts),
+    contingencyPercent: contingencyPercent,
+    professionalFees: Math.round(professionalFees),
+    statutoryFees: Math.round(statutoryFees),
+    pmFees: Math.round(pmFees),
+
+    // Holding (apply defaults based on land value)
+    landTaxYearly: Math.round(landTaxYearly),
+    councilRatesAnnual: councilRatesAnnual,
+    waterRatesAnnual: waterRatesAnnual,
+
+    // Selling (use defaults or user-provided)
+    agentFeesPercent: sellingDefaults.agentFeesPercent,
+    marketingPercent: sellingDefaults.marketingPercent,
+    legalSellingPercent: sellingDefaults.legalSellingPercent,
+
+    // Finance
+    lvr: lvr,
+    interestRate: interestRate,
+
+    // Timeline
+    totalMonths: timeline.totalMonths,
+    leadInMonths: timeline.leadInMonths,
+    constructionMonths: timeline.constructionMonths,
+    sellingMonths: timeline.sellingMonths,
+
+    // Target
+    targetMargin: targetMarginPercent
+  };
+
   toolResult = {
     success: true,
     feasibilityMode: 'results',
-    
+
+    // NEW: Include calculatorPreFill for form/PDF
+    calculatorPreFill: calculatorPreFill,
+
     inputs: {
-      address: input.propertyAddress || conversationContext.lastProperty,
+      address: propertyAddress,
       projectType: input.projectType,
       numUnits: numUnits,
       unitMix: input.unitMix,
@@ -1322,21 +1710,23 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       sellingCostsPercent: sellingCostsPercent,
       gstScheme: gstScheme
     },
-    
+
     revenue: {
-      grvInclGST: grvTotal,
+      grvInclGST: Math.round(grvTotal),
       grvExclGST: Math.round(grvExclGST),
+      gstPayable: Math.round(gstPayable),
       avgPricePerUnit: Math.round(grvTotal / numUnits)
     },
-    
+
     costs: {
-      land: landValue,
+      land: Math.round(landValue),
       construction: Math.round(constructionWithContingency),
       selling: Math.round(sellingCosts),
       finance: Math.round(financeCosts),
+      holding: Math.round(holdingCosts),
       total: Math.round(totalCost)
     },
-    
+
     profitability: {
       grossProfit: Math.round(grossProfit),
       profitMargin: Math.round(profitMargin * 10) / 10,
@@ -1344,17 +1734,19 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       meetsTarget: profitMargin >= targetMarginPercent,
       viability: viability
     },
-    
+
     residual: {
       residualLandValue: Math.round(residualLandValue),
       vsActualLand: landValue > 0 ? Math.round(residualLandValue - landValue) : null
     },
-    
+
     assumptions: {
       contingency: contingencyIncluded ? 'Included in construction' : 'Added 5%',
       financeDrawProfile: '50% average outstanding',
-      stampDuty: 'Excluded',
-      holdingCosts: 'Excluded'
+      landTax: `$${Math.round(landTaxYearly).toLocaleString()}/year`,
+      councilRates: `$${councilRatesAnnual.toLocaleString()}/year`,
+      waterRates: `$${waterRatesAnnual.toLocaleString()}/year`,
+      targetMarginBasis: grvExclGST < 15000000 ? 'GRV under $15M → 15%' : 'GRV $15M+ → 20%'
     }
   };
 }
@@ -1396,11 +1788,17 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       // Fix inline bullet points by adding newlines between them (only for lists, not explanations)
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
+      // Parse button options from the response
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
         daData: toolUse.name === 'search_development_applications' ? toolResult : null,
         feasibilityData: isFeasibility ? toolResult : null,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: true,
         toolName: toolUse.name,
         toolQuery: toolUse.input.query || toolUse.input.address || toolUse.input.propertyAddress
@@ -1414,9 +1812,15 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       let formattedAnswer = formatIntoParagraphs(stripMarkdown(textContent?.text));
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
+      // Parse button options from the response (for feasibility questions)
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: null,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: false
       };
     }
