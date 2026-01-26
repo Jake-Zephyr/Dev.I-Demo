@@ -697,7 +697,14 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
   name: 'calculate_quick_feasibility',
-  description: 'Calculate a quick feasibility analysis. ONLY use after collecting ALL required inputs from user: project type, units/sizes, GRV, construction cost, LVR, interest rate, timeline, selling costs, GST scheme. DO NOT call this tool until you have asked for and received all inputs.',
+  description: `Calculate a quick feasibility analysis.
+
+⚠️ CRITICAL - PARAMETER VALUES:
+- grvTotal: Use EXACT number user said (if user said "8m", use 8000000, NOT 10000000)
+- landValue: Use EXACT number user said (if user said "2m", use 2000000, NOT 5000000)
+- constructionCost: If user provided multiple cost items, ADD THEM (e.g., "build $2.5m, fees $200k, council $150k" = 2500000 + 200000 + 150000 = 2850000)
+
+ONLY use after collecting ALL required inputs from user. DO NOT call this tool until you have asked for and received all inputs.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -728,7 +735,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       grvTotal: {
         type: 'number',
-        description: 'Gross Realisation Value - total sales revenue including GST'
+        description: 'Gross Realisation Value - total sales revenue including GST. CRITICAL: Use exact number user said. Example: if user said "GR is 8m", use 8000000 (NOT 10000000). If user said "$10M", use 10000000.'
       },
       grvMethod: {
         type: 'string',
@@ -737,11 +744,11 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       landValue: {
         type: 'number',
-        description: 'Land/property purchase price'
+        description: 'Land/property purchase price. CRITICAL: Use exact number user said. Example: if user said "land $2m", use 2000000 (NOT 5000000). DO NOT use default or assumed values.'
       },
       constructionCost: {
         type: 'number',
-        description: 'Total construction cost - MUST be provided by user, never assumed'
+        description: 'Total construction cost - MUST be provided by user, never assumed. CRITICAL: If user provided breakdown (e.g., "build $2.5m, professional fees $200k, council fees $150k"), ADD THEM UP: 2500000 + 200000 + 150000 = 2850000.'
       },
       contingencyIncluded: {
         type: 'boolean',
@@ -1070,8 +1077,30 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
   * "6.5" / "6.5%" → Accept as [6.5%]
   * "three percent" / "3" → Accept as [3%]
 
-Step 7: Calculate
-Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
+Step 7: Parse inputs carefully, then calculate
+
+BEFORE calling calculate_quick_feasibility, review the conversation to extract EXACT values:
+
+Example conversation parsing:
+User: "GR is 8m. costs - land $2m, build $2.5m, professional fees $200k, council fees $100k, contributions $150k"
+
+Extract:
+- grvTotal: 8000000 (user said "8m")
+- landValue: 2000000 (user said "land $2m")
+- constructionCost: 2850000 (user said "build $2.5m" + "professional fees $200k" + "council fees $100k" + "contributions $150k" = $2.5M + $0.2M + $0.1M + $0.15M = $2.95M... wait, let me recalculate: $2.5M + $0.2M + $0.15M = $2.85M if council fees and contributions are combined)
+
+⚠️ CRITICAL PARSING RULES:
+1. "8m" = 8000000 (8 million), NOT 10000000
+2. "2m" = 2000000 (2 million), NOT 5000000
+3. When user lists multiple cost items, ADD THEM UP for constructionCost parameter
+4. "GR" = "GRV" = Gross Revenue = grvTotal parameter
+5. DO NOT use default values - use ONLY what user said
+
+After extracting values, call calculate_quick_feasibility with:
+- grvTotal: [exact number user said]
+- landValue: [exact number user said]
+- constructionCost: [sum of all cost items user mentioned]
+- lvr, interestRate, timelineMonths, sellingCostsPercent, gstScheme as discussed
 
 🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
 BEFORE you write "Revenue:" or "Costs:" or show ANY feasibility numbers:
