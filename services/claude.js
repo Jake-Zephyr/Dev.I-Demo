@@ -351,6 +351,13 @@ function detectQuestionContext(text, buttons) {
       needsCustomInput: buttons.some(b => b.toLowerCase().includes('different'))
     };
   }
+  if ((lowerText.includes('quick') && lowerText.includes('detailed')) ||
+      (lowerText.includes('feaso') && lowerText.includes('calculator'))) {
+    return {
+      type: 'feasibility_mode',
+      label: 'Feasibility Mode Selection'
+    };
+  }
 
   return { type: 'general', label: 'Select an option' };
 }
@@ -983,7 +990,7 @@ HANDLING AMBIGUOUS RESPONSES:
 - Example: Asked "Quick or detailed?" and user says "yes" → ask them to pick one
 
 FEASIBILITY RULES:
-- ALWAYS ask "Quick feaso or detailed calculator?" first - use mode="selection"
+- ALWAYS ask "Quick feaso or detailed calculator? [Quick] [Detailed]" with buttons - use mode="selection"
 - Only proceed to quick/detailed after user EXPLICITLY chooses
 - If conversation was about RENOVATION, set developmentType="renovation" and isRenovation=true
 - For renovation: construction costs are ~$1000-$3000/sqm
