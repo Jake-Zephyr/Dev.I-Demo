@@ -351,6 +351,13 @@ function detectQuestionContext(text, buttons) {
       needsCustomInput: buttons.some(b => b.toLowerCase().includes('different'))
     };
   }
+  if ((lowerText.includes('quick') && lowerText.includes('detailed')) ||
+      (lowerText.includes('feaso') && lowerText.includes('calculator'))) {
+    return {
+      type: 'feasibility_mode',
+      label: 'Feasibility Mode Selection'
+    };
+  }
 
   return { type: 'general', label: 'Select an option' };
 }
@@ -983,7 +990,7 @@ HANDLING AMBIGUOUS RESPONSES:
 - Example: Asked "Quick or detailed?" and user says "yes" → ask them to pick one
 
 FEASIBILITY RULES:
-- ALWAYS ask "Quick feaso or detailed calculator?" first - use mode="selection"
+- ALWAYS ask "Quick feaso or detailed calculator? [Quick] [Detailed]" with buttons - use mode="selection"
 - Only proceed to quick/detailed after user EXPLICITLY chooses
 - If conversation was about RENOVATION, set developmentType="renovation" and isRenovation=true
 - For renovation: construction costs are ~$1000-$3000/sqm
@@ -1077,36 +1084,49 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
   * "6.5" / "6.5%" → Accept as [6.5%]
   * "three percent" / "3" → Accept as [3%]
 
-Step 7: Parse inputs carefully, then calculate
+Step 7: Parse inputs carefully, echo them back, then calculate
 
-BEFORE calling calculate_quick_feasibility, review the conversation to extract EXACT values:
+⚠️ MANDATORY PROCESS:
 
-Example conversation parsing:
-User: "GR is 8m. costs - land $2m, build $2.5m, professional fees $200k, council fees $100k, contributions $150k"
+1. Extract values from conversation:
+   - What did user say for GRV? (e.g., "12m" = 12000000)
+   - What did user say for land? (e.g., "2 mil" = 2000000)
+   - What did user say for construction? (e.g., "$5m" = 5000000)
 
-Extract:
-- grvTotal: 8000000 (user said "8m")
-- landValue: 2000000 (user said "land $2m")
-- constructionCost: 2850000 (user said "build $2.5m" + "professional fees $200k" + "council fees $100k" + "contributions $150k" = $2.5M + $0.2M + $0.1M + $0.15M = $2.95M... wait, let me recalculate: $2.5M + $0.2M + $0.15M = $2.85M if council fees and contributions are combined)
+2. BEFORE calling the tool, show what you extracted:
+   "Calculating with:
+   - GRV: $12M (you said '12m')
+   - Land: $2M (you said '2 mil')
+   - Construction: $5M (you said '$5m')
+   - LVR 70%, 8% interest, 13 months, 4% selling costs, margin scheme"
 
-⚠️ CRITICAL PARSING RULES:
-1. "8m" = 8000000 (8 million), NOT 10000000
-2. "2m" = 2000000 (2 million), NOT 5000000
-3. When user lists multiple cost items, ADD THEM UP for constructionCost parameter
-4. "GR" = "GRV" = Gross Revenue = grvTotal parameter
-5. DO NOT use default values - use ONLY what user said
+3. THEN call calculate_quick_feasibility with these exact values:
+   - grvTotal: 12000000 (NOT 8000000, NOT 10000000)
+   - landValue: 2000000 (NOT 5000000)
+   - constructionCost: 5000000 (NOT 2950000, NOT 4000000)
 
-After extracting values, call calculate_quick_feasibility with:
-- grvTotal: [exact number user said]
-- landValue: [exact number user said]
-- constructionCost: [sum of all cost items user mentioned]
-- lvr, interestRate, timelineMonths, sellingCostsPercent, gstScheme as discussed
+⚠️ PARSING RULES:
+- "12m" = 12,000,000 (twelve million)
+- "2 mil" = 2,000,000 (two million)
+- "$5m" = 5,000,000 (five million)
+- DO NOT use different numbers than what user said
+- DO NOT use cached/default values from previous conversations
 
 🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
-BEFORE you write "Revenue:" or "Costs:" or show ANY feasibility numbers:
-1. Did you call calculate_quick_feasibility tool? YES/NO
-2. If NO: STOP. Call the tool NOW. Do NOT write results from memory.
-3. If YES: Copy the exact numbers from the tool response. Do NOT change them.
+
+CRITICAL CHECKLIST (answer each):
+1. Did you call calculate_quick_feasibility tool? ☐ YES ☐ NO
+2. Did the tool return results? ☐ YES ☐ NO
+3. Are you about to present tool results or make up numbers? ☐ TOOL RESULTS ☐ MAKING UP
+4. Does revenue.grvInclGST from tool match what user said? ☐ YES ☐ NO
+5. Does costs.land from tool match what user said? ☐ YES ☐ NO
+6. Does costs.construction from tool match what user said? ☐ YES ☐ NO
+
+If ANY answer is wrong, STOP and fix it before presenting.
+
+⚠️ DO NOT STREAM RESULTS WHILE WAITING FOR TOOL
+You might be tempted to start writing "Revenue: $..." while the tool is processing.
+DO NOT DO THIS. Wait for the tool to complete, then present tool results ONLY.
 
 CRITICAL - PRESENTING FEASIBILITY RESULTS:
 ⚠️ ABSOLUTE RULES - NEVER VIOLATE THESE:
@@ -1119,6 +1139,10 @@ CRITICAL - PRESENTING FEASIBILITY RESULTS:
    - GRV (use revenue.grvInclGST from tool result, NOT what user said)
    - Construction costs (use costs.construction from tool result)
    - Profit/loss (use profitability.grossProfit from tool result)
+
+⚠️ COMMON MISTAKE: Showing "$8M GRV" when user said "$12M"
+This happens when you use the INPUT (what user said) instead of OUTPUT (what tool returned).
+Always use tool.revenue.grvInclGST, NOT what you remember user saying.
 
 WHY YOU MAKE MISTAKES:
 - You try to be helpful by calculating during streaming
@@ -1140,8 +1164,15 @@ VERIFICATION BEFORE PRESENTING:
 - If NO: The tool may have failed - tell user "The calculation returned unexpected results. Let me try again."
 - If YES: Present the results exactly as tool returned them
 
-PRESENTING RESULTS - FORMAT REQUIREMENTS:
-When showing feasibility results, use this format:
+PRESENTING RESULTS - MANDATORY FORMAT:
+When showing feasibility results, you MUST use this EXACT format:
+
+**Inputs received:**
+- Purchase price: $X.XM (from conversation: user said "X mil")
+- Target GRV: $X.XM (from conversation: user said "X m")
+- Construction cost: $X.XM (from conversation: user said "$Xm")
+- LVR: XX% | Interest: X.X% | Timeline: XX months | Selling costs: X%
+- GST: [Margin scheme with $X.XM cost base / Fully taxed]
 
 **Revenue: (Including GST)**
 - Gross Revenue (inc GST): $XX.XM
