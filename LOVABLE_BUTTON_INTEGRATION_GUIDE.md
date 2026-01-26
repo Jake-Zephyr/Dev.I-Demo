@@ -1,8 +1,13 @@
-# Quick Feasibility Button Integration Guide
+# Quick Feasibility Integration Guide
 
 ## Overview
 
-The backend now returns structured data to support clickable button options for multiple-choice questions during the quick feasibility flow. This guide explains how to implement button rendering in the frontend.
+The backend returns structured data to support:
+1. Clickable button options for multiple-choice questions
+2. Pre-filling the detailed calculator form with quick feasibility results
+3. PDF generation from quick feasibility data
+
+This guide explains how to implement these features in the frontend.
 
 ## Backend Changes
 
@@ -357,3 +362,379 @@ If you have questions about implementation, check:
 **Implementation Priority:** HIGH
 **Estimated Effort:** 2-4 hours
 **Impact:** Significantly improves UX for quick feasibility flow
+
+---
+
+## Part 2: Calculator Pre-Fill Integration
+
+### Overview
+
+When quick feasibility completes, the backend returns a `calculatorPreFill` object that contains all the data needed to:
+1. Pre-fill the detailed calculator form
+2. Generate a PDF report  
+3. Allow users to adjust inputs and re-calculate
+
+### Backend Response Structure
+
+When the `calculate_quick_feasibility` tool completes, the response includes:
+
+```typescript
+interface QuickFeasibilityResponse {
+  answer: string;  // Human-readable results summary
+  feasibilityData: {
+    success: true;
+    feasibilityMode: 'results';
+    
+    // THIS IS THE KEY OBJECT - Use it to pre-fill the detailed form
+    calculatorPreFill: {
+      // Property (from property lookup)
+      property: string;          // e.g. "9 Hawaii Avenue, Palm Beach"
+      siteArea: number;           // e.g. 1394 (sqm)
+      densityCode: string;        // e.g. "RD8"
+      heightLimit: string;        // e.g. "9m"
+      
+      // Project (from user input)
+      numUnits: number;           // e.g. 1 (or actual unit count if provided)
+      unitMix: string;            // e.g. "1 units" or "50 x 250sqm + 9 x 400sqm"
+      saleableArea: number;       // e.g. 1 (or actual saleable area)
+      
+      // Revenue
+      grvInclGST: number;         // e.g. 8000000 ($8M)
+      
+      // Acquisition
+      landValue: number;          // e.g. 2000000 ($2M)
+      gstScheme: string;          // "margin" or "fully_taxed"
+      gstCostBase: number;        // e.g. 2000000 (if margin scheme)
+      
+      // Construction
+      buildCosts: number;         // e.g. 3500000
+      contingencyPercent: number; // e.g. 0 or 5
+      professionalFees: number;   // e.g. 0
+      statutoryFees: number;      // e.g. 0
+      pmFees: number;             // e.g. 0
+      
+      // Holding
+      landTaxYearly: number;      // e.g. 14950
+      councilRatesAnnual: number; // e.g. 5000
+      waterRatesAnnual: number;   // e.g. 1400
+      
+      // Selling
+      agentFeesPercent: number;   // e.g. 1.5
+      marketingPercent: number;   // e.g. 1.2
+      legalSellingPercent: number;// e.g. 0.3
+      
+      // Finance
+      lvr: number;                // e.g. 70 (percent)
+      interestRate: number;       // e.g. 8 (percent)
+      
+      // Timeline
+      totalMonths: number;        // e.g. 13
+      leadInMonths: number;       // e.g. 2
+      constructionMonths: number; // e.g. 9
+      sellingMonths: number;      // e.g. 2
+      
+      // Target
+      targetMargin: number;       // e.g. 15 (percent)
+    };
+    
+    // Summary results (for display)
+    revenue: {...};
+    costs: {...};
+    profitability: {...};
+    residual: {...};
+  };
+}
+```
+
+### Implementation: Pre-Fill Detailed Calculator
+
+When the user clicks "Fill from chat" or navigates to the detailed calculator after completing quick feasibility:
+
+**Step 1: Extract calculatorPreFill from last feasibility result**
+
+```typescript
+// Find the most recent feasibility response in chat history
+const lastFeasibility = chatHistory
+  .reverse()
+  .find(msg => msg.feasibilityData?.calculatorPreFill);
+
+const preFillData = lastFeasibility?.feasibilityData?.calculatorPreFill;
+
+if (!preFillData) {
+  console.error('No quick feasibility data found to pre-fill');
+  return;
+}
+```
+
+**Step 2: Map calculatorPreFill to form fields**
+
+```typescript
+// Assuming you have a form state object
+function fillFormFromQuickFeasibility(preFillData: CalculatorPreFill) {
+  setFormData({
+    // Property tab
+    propertyAddress: preFillData.property,
+    siteAreaSqm: preFillData.siteArea,
+    densityCode: preFillData.densityCode,
+    heightLimit: preFillData.heightLimit,
+    
+    // Project tab
+    numberOfUnits: preFillData.numUnits,
+    unitMixDescription: preFillData.unitMix,
+    totalSaleableAreaSqm: preFillData.saleableArea,
+    
+    // Revenue tab
+    grossRevenueInclGST: preFillData.grvInclGST,
+    
+    // Acquisition tab
+    landPurchasePrice: preFillData.landValue,
+    gstTreatment: preFillData.gstScheme === 'margin' ? 'Margin Scheme' : 'Fully Taxed',
+    gstCostBase: preFillData.gstCostBase,
+    
+    // Construction tab
+    baseBuildCosts: preFillData.buildCosts,
+    contingencyPercentage: preFillData.contingencyPercent,
+    professionalFeesTotal: preFillData.professionalFees,
+    statutoryFeesTotal: preFillData.statutoryFees,
+    projectManagementFees: preFillData.pmFees,
+    
+    // Holding costs tab
+    landTaxPerYear: preFillData.landTaxYearly,
+    councilRatesPerYear: preFillData.councilRatesAnnual,
+    waterRatesPerYear: preFillData.waterRatesAnnual,
+    
+    // Selling costs tab
+    agentFeesPercent: preFillData.agentFeesPercent,
+    marketingCostsPercent: preFillData.marketingPercent,
+    legalFeesPercent: preFillData.legalSellingPercent,
+    
+    // Finance tab
+    loanToValueRatio: preFillData.lvr,
+    interestRatePercent: preFillData.interestRate,
+    
+    // Timeline tab
+    totalProjectMonths: preFillData.totalMonths,
+    leadInPhaseMonths: preFillData.leadInMonths,
+    constructionPhaseMonths: preFillData.constructionMonths,
+    sellingPhaseMonths: preFillData.sellingMonths,
+    
+    // Target tab
+    targetProfitMarginPercent: preFillData.targetMargin
+  });
+}
+```
+
+**Step 3: Handle missing/default values**
+
+Some fields may be `0` or empty if not provided during quick feasibility:
+
+```typescript
+function fillFormFromQuickFeasibility(preFillData: CalculatorPreFill) {
+  setFormData({
+    // ... other fields
+    
+    // Only set if non-zero
+    professionalFeesTotal: preFillData.professionalFees || null,
+    statutoryFeesTotal: preFillData.statutoryFees || null,
+    projectManagementFees: preFillData.pmFees || null,
+    
+    // For quick feaso with total GRV (not per-unit), these might be 1
+    // Check if they're placeholder values
+    numberOfUnits: preFillData.numUnits === 1 ? null : preFillData.numUnits,
+    totalSaleableAreaSqm: preFillData.saleableArea === 1 ? null : preFillData.saleableArea,
+  });
+}
+```
+
+### Common Issues and Solutions
+
+#### Issue 1: Form fields not updating
+
+**Problem:** `calculatorPreFill` is in the response but form stays empty
+
+**Solution:** Check your form state management:
+```typescript
+// BAD - state not updating
+const [formData, setFormData] = useState(initialData);
+setFormData(newData);  // Might not trigger re-render if object reference same
+
+// GOOD - force new object reference
+setFormData({ ...newData });  // Spread creates new object
+```
+
+#### Issue 2: Number formatting
+
+**Problem:** Values like `2000000` showing as "2000000" instead of "$2M" or formatted
+
+**Solution:** Format numbers for display:
+```typescript
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-AU', {
+    style: 'currency',
+    currency: 'AUD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+// Display: formatCurrency(preFillData.landValue) → "$2,000,000"
+```
+
+#### Issue 3: GST scheme mapping
+
+**Problem:** Backend returns `"margin"` but form expects `"Margin Scheme"`
+
+**Solution:** Map the values:
+```typescript
+const gstSchemeMap = {
+  'margin': 'Margin Scheme',
+  'fully_taxed': 'Fully Taxed'
+};
+
+const gstSchemeDisplay = gstSchemeMap[preFillData.gstScheme] || 'Margin Scheme';
+```
+
+### Testing Checklist
+
+Use this checklist to verify calculator pre-fill is working:
+
+- [ ] Complete a quick feasibility with total GRV (e.g., "$8M")
+- [ ] Click "Fill from chat" or navigate to detailed calculator
+- [ ] Verify **Property** fields filled: address, site area, density, height
+- [ ] Verify **Revenue** field filled: GRV = $8M
+- [ ] Verify **Acquisition** fields filled: land value, GST scheme, cost base
+- [ ] Verify **Construction** field filled: total construction cost
+- [ ] Verify **Finance** fields filled: LVR, interest rate
+- [ ] Verify **Timeline** fields filled: total months, phases
+- [ ] Verify **Selling costs** fields filled: percentages
+- [ ] Verify **Holding costs** fields filled: land tax, council rates, water rates
+- [ ] Generate PDF from detailed view - verify all values match quick feasibility
+- [ ] Modify one value in detailed view, recalculate - verify it updates correctly
+
+### Debugging
+
+If pre-fill isn't working, add logging:
+
+```typescript
+console.log('[PREFILL] Searching for quick feasibility data...');
+console.log('[PREFILL] Chat history length:', chatHistory.length);
+
+const lastFeasibility = chatHistory
+  .reverse()
+  .find(msg => msg.feasibilityData?.calculatorPreFill);
+
+console.log('[PREFILL] Found feasibility:', !!lastFeasibility);
+console.log('[PREFILL] calculatorPreFill:', lastFeasibility?.feasibilityData?.calculatorPreFill);
+
+if (lastFeasibility) {
+  const data = lastFeasibility.feasibilityData.calculatorPreFill;
+  console.log('[PREFILL] Land value:', data.landValue);
+  console.log('[PREFILL] GRV:', data.grvInclGST);
+  console.log('[PREFILL] Construction:', data.buildCosts);
+}
+```
+
+Then check the browser console when clicking "Fill from chat".
+
+### Example: Complete Integration
+
+```typescript
+import { useState, useEffect } from 'react';
+
+function DetailedCalculator({ chatHistory }) {
+  const [formData, setFormData] = useState(null);
+  const [preFilled, setPreFilled] = useState(false);
+
+  // Auto-fill on mount if quick feasibility exists
+  useEffect(() => {
+    fillFromQuickFeasibility();
+  }, []);
+
+  function fillFromQuickFeasibility() {
+    // Find last quick feasibility result
+    const lastFeaso = chatHistory
+      .slice()
+      .reverse()
+      .find(msg => msg.feasibilityData?.calculatorPreFill);
+
+    if (!lastFeaso) {
+      console.log('No quick feasibility data to pre-fill');
+      return;
+    }
+
+    const data = lastFeaso.feasibilityData.calculatorPreFill;
+    
+    setFormData({
+      property: data.property,
+      siteArea: data.siteArea,
+      landValue: data.landValue,
+      grv: data.grvInclGST,
+      construction: data.buildCosts,
+      lvr: data.lvr,
+      interestRate: data.interestRate,
+      timeline: data.totalMonths,
+      gstScheme: data.gstScheme === 'margin' ? 'Margin Scheme' : 'Fully Taxed',
+      gstCostBase: data.gstCostBase,
+      // ... all other fields
+    });
+
+    setPreFilled(true);
+    
+    console.log('[CALCULATOR] Pre-filled from quick feasibility:', data.property);
+  }
+
+  return (
+    <div>
+      {preFilled && (
+        <div className="prefill-notice">
+          ✓ Form pre-filled from quick feasibility
+        </div>
+      )}
+      
+      <form>
+        {/* Render all form fields using formData */}
+      </form>
+      
+      <button onClick={fillFromQuickFeasibility}>
+        Fill from chat
+      </button>
+    </div>
+  );
+}
+```
+
+---
+
+## Part 3: Common Pitfalls
+
+### 1. Confusing siteArea vs saleableArea
+
+- **siteArea**: The land parcel size (e.g., 1,394 sqm) - from property lookup
+- **saleableArea**: Total unit floor area (e.g., 16,100 sqm for 50 x 250 + 9 x 400) - from user
+
+These are DIFFERENT values. Don't mix them up!
+
+### 2. Using input values instead of calculated values
+
+When displaying quick feasibility results, use the VALUES FROM THE TOOL OUTPUT, not what the user said:
+
+```typescript
+// BAD - using what user told you
+const grv = userInput.grv;  // Might be string, might have typos
+
+// GOOD - using tool output
+const grv = response.feasibilityData.revenue.grvInclGST;  // Validated number
+```
+
+### 3. Not handling null/undefined
+
+Always check if calculatorPreFill exists before accessing it:
+
+```typescript
+// BAD
+const landValue = response.feasibilityData.calculatorPreFill.landValue;  // TypeError if undefined
+
+// GOOD
+const landValue = response.feasibilityData?.calculatorPreFill?.landValue ?? 0;
+```
+
