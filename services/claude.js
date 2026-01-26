@@ -995,17 +995,16 @@ ${contextSummary}
 QUICK FEASIBILITY FLOW:
 When user chooses quick feasibility, collect inputs step by step. NEVER assume values for these critical inputs - ALWAYS ask (in no particular order, dont be rigid with the  structure, keep conversation):
 
-Step 1: Project type (if not already known)
-"What type of project? [New build] [Knockdown rebuild] [Renovation]"
+Step 1: Purchase price / Land value
+"What's the site acquisition cost (purchase price)? For example: '$5M' or '$2,500/sqm'"
 
-ACCEPTING USER VARIATIONS FOR PROJECT TYPE:
-- "build" / "new build" / "new" → Accept as "New build"
-- "knockdown" / "knockdown rebuild" / "demolish and rebuild" / "demo" → Accept as "Knockdown rebuild"
-- "reno" / "renovation" / "renovate" / "refurb" → Accept as "Renovation"
-- "apartments" / "townhouses" / "units" → WRONG ANSWER - these are property types, not project types
-  * If user says this, use ask_clarification: "I need to know if this is a new build, knockdown rebuild, or renovation. Which one?"
+ACCEPTING USER VARIATIONS:
+- "$5M" / "$5,000,000" / "5 million" → Accept as land value
+- "$2,500/sqm" → Need site area to calculate (from property lookup)
+- "I already own it" / "already purchased" → Ask: "What was the purchase price?"
+- If user doesn't know: Use residual land value approach (calculate after getting other inputs)
 
-Step 2: GRV (Gross Realisation Value) - ASK THIS FIRST
+Step 2: GRV (Gross Realisation Value)
 "What's your target gross revenue (GRV)? For example: '$10M total' or '$5,000/sqm'"
 
 CRITICAL - USER CAN SKIP UNIT MIX:
@@ -1103,17 +1102,19 @@ CRITICAL RULES FOR QUICK FEASO:
 
 TRACKING INPUTS - BEFORE CALLING calculate_quick_feasibility:
 You MUST have ALL of these inputs:
-1. ✓ GRV (total amount, e.g., "$10M" OR $/sqm rate)
-2. ✓ Construction cost (total, including fees and contingency)
-3. ✓ LVR
-4. ✓ Interest rate
-5. ✓ Timeline in months
-6. ✓ Selling costs percentage
-7. ✓ GST scheme (and cost base if margin scheme)
+1. ✓ Land value / Purchase price (acquisition cost)
+2. ✓ GRV (total amount, e.g., "$10M" OR $/sqm rate)
+3. ✓ Construction cost (total, including fees and contingency)
+4. ✓ LVR
+5. ✓ Interest rate
+6. ✓ Timeline in months
+7. ✓ Selling costs percentage
+8. ✓ GST scheme (and cost base if margin scheme)
 
-OPTIONAL INPUTS (only if user provides $/sqm rate):
-- Number of units (if $/sqm provided, need saleable area to calculate total GRV)
-- Unit sizes/mix (if $/sqm provided, need saleable area to calculate total GRV)
+OPTIONAL INPUTS:
+- Number of units (only if user provides $/sqm rate for GRV)
+- Unit sizes/mix (only if user provides $/sqm rate for GRV)
+- Project type (contextual - doesn't affect calculation, defaults to "new_build")
 
 If ANY required input is missing, ask for it. DO NOT call the tool until you have ALL required inputs.
 When you have all inputs, call the tool immediately - don't summarize or delay.
@@ -1131,6 +1132,7 @@ B) User provided $/sqm rate (e.g., "$25k/sqm"):
    - grvTotal: Calculate from $/sqm × area (e.g., $25k/sqm × 16,100 = $402.5M)
 
 ALL OTHER PARAMETERS (same for both scenarios):
+- landValue: Purchase price from user (e.g., 5000000 for $5M) - REQUIRED
 - constructionCost: Total from user (e.g., $171.7M)
 - lvr: As number 0-100 (e.g., 60 for 60%, 100 for fully funded)
 - interestRate: As number (e.g., 6.8 for 6.8%)
@@ -1138,9 +1140,8 @@ ALL OTHER PARAMETERS (same for both scenarios):
 - sellingCostsPercent: As number (e.g., 3 for 3%)
 - gstScheme: "margin" or "fully_taxed"
 - gstCostBase: REQUIRED if gstScheme is "margin" (e.g., 12000000 for $12M)
-- landValue: Land/property value if provided (otherwise 0)
 - propertyAddress: From context
-- projectType: "new_build", "knockdown_rebuild", or "renovation"
+- projectType: Default to "new_build" if not specified
 
 ${contextSummary}
 
