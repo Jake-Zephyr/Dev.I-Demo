@@ -33,6 +33,7 @@ The backend automatically detects button patterns like `[Option 1] [Option 2]` i
 | **Interest Rate** | `interest_rate` | `["6.5%", "7.0%", "7.5%", "Custom"]` | Shows text input if "Custom" selected |
 | **Selling Costs** | `selling_costs` | `["3%", "4%", "Custom"]` | Shows text input if "Custom" selected |
 | **GST Scheme** | `gst_scheme` | `["Margin scheme", "Fully taxed"]` | Shows follow-up if "Margin scheme" selected |
+| **GST Cost Base** | `gst_cost_base` | `["Same as acquisition cost", "Different cost base"]` | Shows text input if "Different cost base" selected |
 | **Project Type** | `project_type` | `["New build", "Knockdown rebuild", "Renovation"]` | No custom input needed |
 
 ## Frontend Implementation

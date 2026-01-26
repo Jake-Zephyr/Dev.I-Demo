@@ -344,6 +344,13 @@ function detectQuestionContext(text, buttons) {
   if (lowerText.includes('project type') || lowerText.includes('type of project')) {
     return { type: 'project_type', label: 'Project Type' };
   }
+  if (lowerText.includes('cost base') && (lowerText.includes('margin scheme') || lowerText.includes('gst'))) {
+    return {
+      type: 'gst_cost_base',
+      label: 'GST Margin Scheme Cost Base',
+      needsCustomInput: buttons.some(b => b.toLowerCase().includes('different'))
+    };
+  }
 
   return { type: 'general', label: 'Select an option' };
 }
@@ -1046,7 +1053,9 @@ CRITICAL - BUTTON FORMAT RULES:
   * WRONG: "GST treatment:\n- Margin scheme\n- Fully taxed"
   * CORRECT: "GST treatment? [Margin scheme] [Fully taxed]"
 - If user clicks [Custom] for interest rate or selling costs, then ask for their custom value
-- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes?"
+- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes? [Same as acquisition cost] [Different cost base]"
+  * If they click [Same as acquisition cost], use the land value/purchase price as the GST cost base
+  * If they click [Different cost base], ask: "What is the cost base amount?"
 - Always present button options on the SAME LINE as the question
 - Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
 
