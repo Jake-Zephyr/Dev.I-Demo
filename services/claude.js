@@ -706,10 +706,18 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
   name: 'calculate_quick_feasibility',
   description: `Calculate a quick feasibility analysis.
 
+⚠️ CRITICAL - BEFORE CALLING THIS TOOL:
+Scan the CURRENT conversation (NOT previous chats) for the most recent values user provided:
+- What did user say for GRV? (e.g., "$70m" = 70000000)
+- What did user say for land? (e.g., "$10m" = 10000000)
+- What did user say for construction? (e.g., "$30m build + $1m professional + $1m council + 5% contingency")
+
 ⚠️ CRITICAL - PARAMETER VALUES:
-- grvTotal: Use EXACT number user said (if user said "8m", use 8000000, NOT 10000000)
-- landValue: Use EXACT number user said (if user said "2m", use 2000000, NOT 5000000)
-- constructionCost: If user provided multiple cost items, ADD THEM (e.g., "build $2.5m, fees $200k, council $150k" = 2500000 + 200000 + 150000 = 2850000)
+- grvTotal: Use EXACT number from CURRENT conversation (if user said "$70m", use 70000000, NOT 8000000 from previous chat)
+- landValue: Use EXACT number from CURRENT conversation (if user said "$10m", use 10000000, NOT 2000000 from previous chat)
+- constructionCost: If user provided multiple cost items, ADD THEM and include contingency
+
+⚠️ DO NOT use values from previous conversations - only use what user said in THIS chat.
 
 ONLY use after collecting ALL required inputs from user. DO NOT call this tool until you have asked for and received all inputs.`,
   input_schema: {
@@ -816,6 +824,17 @@ ONLY use after collecting ALL required inputs from user. DO NOT call this tool u
     const contextSummary = buildContextSummary(conversationContext);
     
 const systemPrompt = `You are Dev.i, a friendly Gold Coast property development advisor.
+
+🚨 CONVERSATION ISOLATION - READ THIS FIRST 🚨
+Each conversation is SEPARATE. DO NOT use values from previous conversations.
+When user provides inputs like "$70m GRV" or "$10m land", use THOSE exact values.
+DO NOT use "$8m GRV" or "$2m land" from a previous chat.
+
+Example of WRONG behavior:
+- Previous chat: User said "$8m GRV, $2m land"
+- Current chat: User says "$70m GRV, $10m land"
+- You show: "$8m GRV, $2m land" ❌ WRONG - these are from previous chat!
+- You should show: "$70m GRV, $10m land" ✅ CORRECT - from current chat
 
 TOOL USAGE RULES (CRITICAL):
 - ONLY use tools when the user is asking about a SPECIFIC PROPERTY with an address or lot/plan
@@ -1629,11 +1648,23 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
       
   // Handle quick feasibility calculation
 else if (toolUse.name === 'calculate_quick_feasibility') {
-  console.log('[CLAUDE] Calculating quick feasibility');
+  console.log('[CLAUDE] ========== QUICK FEASIBILITY CALCULATION START ==========');
   console.log('[CLAUDE] Tool inputs received:', JSON.stringify(toolUse.input, null, 2));
+  console.log('[CLAUDE] Conversation context:', JSON.stringify({
+    lastProperty: conversationContext.lastProperty,
+    lastSiteArea: conversationContext.lastSiteArea,
+    // Don't log full context, just key fields
+  }));
+
   if (sendProgress) sendProgress('🔢 Crunching the numbers...');
 
   const input = toolUse.input;
+
+  // CRITICAL: Log the actual values being used
+  console.log('[CLAUDE] CRITICAL VALUES:');
+  console.log('  - grvTotal (from tool input):', input.grvTotal);
+  console.log('  - landValue (from tool input):', input.landValue);
+  console.log('  - constructionCost (from tool input):', input.constructionCost);
 
   // Get values from input
   const numUnits = input.numUnits;
@@ -1856,6 +1887,15 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       targetMarginBasis: grvExclGST < 15000000 ? 'GRV under $15M → 15%' : 'GRV $15M+ → 20%'
     }
   };
+
+  // CRITICAL: Log what the tool actually calculated
+  console.log('[CLAUDE] ========== TOOL CALCULATION RESULTS ==========');
+  console.log('[CLAUDE] Tool returned:');
+  console.log('  - revenue.grvInclGST:', toolResult.revenue.grvInclGST);
+  console.log('  - costs.land:', toolResult.costs.land);
+  console.log('  - costs.construction:', toolResult.costs.construction);
+  console.log('  - profitability.grossProfit:', toolResult.profitability.grossProfit);
+  console.log('[CLAUDE] ========== END TOOL RESULTS ==========');
 }
       // Send the tool result back to Claude
       const finalResponse = await anthropic.messages.create({
