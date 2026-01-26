@@ -1073,16 +1073,29 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
 Step 7: Calculate
 Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
 
+🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
+BEFORE you write "Revenue:" or "Costs:" or show ANY feasibility numbers:
+1. Did you call calculate_quick_feasibility tool? YES/NO
+2. If NO: STOP. Call the tool NOW. Do NOT write results from memory.
+3. If YES: Copy the exact numbers from the tool response. Do NOT change them.
+
 CRITICAL - PRESENTING FEASIBILITY RESULTS:
 ⚠️ ABSOLUTE RULES - NEVER VIOLATE THESE:
 1. You MUST call calculate_quick_feasibility tool - do NOT calculate manually
-2. You MUST present ONLY what the tool returns - NEVER make up numbers
-3. If the tool fails or returns an error, say "I couldn't calculate the feasibility. Please try again."
-4. NEVER present different numbers than the tool output - this includes:
-   - Unit counts (use inputs.numUnits from tool result)
-   - GRV (use revenue.grvInclGST from tool result)
+2. You MUST wait for the tool to return results - do NOT generate results while waiting
+3. You MUST present ONLY what the tool returns - NEVER make up numbers
+4. If the tool fails or returns an error, say "I couldn't calculate the feasibility. Please try again."
+5. NEVER present different numbers than the tool output - this includes:
+   - Land value (use costs.land from tool result, NOT what you remember)
+   - GRV (use revenue.grvInclGST from tool result, NOT what user said)
    - Construction costs (use costs.construction from tool result)
    - Profit/loss (use profitability.grossProfit from tool result)
+
+WHY YOU MAKE MISTAKES:
+- You try to be helpful by calculating during streaming
+- You mix up remembered values with calculated values
+- You use the INPUTS instead of the OUTPUTS
+SOLUTION: Wait for tool, copy tool output exactly, do NOT improvise.
 
 The tool output contains these fields (use them EXACTLY):
 - inputs.numUnits, inputs.saleableArea, inputs.constructionCost
@@ -1093,9 +1106,32 @@ The tool output contains these fields (use them EXACTLY):
 
 VERIFICATION BEFORE PRESENTING:
 - Check: Does revenue.grvInclGST match what user told you?
+- Check: Does costs.land match what user told you?
 - Check: Does costs.construction match what user told you?
 - If NO: The tool may have failed - tell user "The calculation returned unexpected results. Let me try again."
 - If YES: Present the results exactly as tool returned them
+
+PRESENTING RESULTS - FORMAT REQUIREMENTS:
+When showing feasibility results, use this format:
+
+**Revenue: (Including GST)**
+- Gross Revenue (inc GST): $XX.XM
+- GST Payable: $XX.XM
+- Net Revenue (exc GST): $XX.XM
+
+**Total Project Costs: (Excluding GST)**
+- Land acquisition: $XX.XM
+- Construction: $XX.XM
+- Selling costs (X%): $XX.XM
+- Finance costs: $XX.XM
+- Holding costs: $XX.XM
+
+Note: Statutory and council fees are GST-free (not subject to GST).
+
+**Profitability:**
+- Gross Profit: $XX.XM
+- Profit Margin: XX.X%
+- Status: [VIABLE/MARGINAL/CHALLENGING/NOT VIABLE]
 
 CRITICAL RULES FOR QUICK FEASO:
 - NEVER assume construction costs - always ask the user
@@ -1534,6 +1570,7 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
   // Handle quick feasibility calculation
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] Calculating quick feasibility');
+  console.log('[CLAUDE] Tool inputs received:', JSON.stringify(toolUse.input, null, 2));
   if (sendProgress) sendProgress('🔢 Crunching the numbers...');
 
   const input = toolUse.input;
