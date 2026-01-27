@@ -1800,9 +1800,14 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   const densityCode = conversationContext.lastDensity || '';
   const heightLimit = conversationContext.lastHeight || '';
 
-  // Contingency is handled in parseConstructionCost
+  // Contingency handling
+  // If user mentioned contingency (e.g., "$30m + 5% contingency"), it's already in the total
+  // If they didn't mention it, assume it's NOT included and add 5%
   const contingencyPercent = parsed.constructionBreakdown?.contingencyPercent || 0;
-  const constructionWithContingency = constructionCost;
+  const contingencyIncluded = contingencyPercent > 0;  // Was contingency explicitly mentioned?
+  const constructionWithContingency = contingencyIncluded
+    ? constructionCost  // Already includes contingency from parser
+    : constructionCost * 1.05;  // Add 5% contingency
 
   // Convert percentages to decimals
   const lvrDecimal = lvr / 100;
