@@ -570,34 +570,27 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     const tools = [
       {
         name: 'get_property_info',
-        description: `🚨 STRICT USAGE RULES - READ BEFORE CALLING:
+        description: `Look up Gold Coast property planning details (zone, density, height, overlays, planning scheme text).
 
-ONLY call this tool when ALL of these conditions are met:
-1. User has provided a SPECIFIC property address or lot/plan number
-2. User is asking about planning controls (zone, density, height, overlays) for THAT SPECIFIC property
-3. You need actual planning scheme data from the Gold Coast system
+WHEN TO USE THIS TOOL:
+✅ User FIRST mentions a property address: "I want to talk about 271 Boundary Street Coolangatta"
+✅ User provides lot/plan: "Look up 295RP21863"
+✅ User asks about planning for specific address: "What's the zoning for 123 Main St?"
+✅ User wants to know what can be built at an address
 
-DO NOT call this tool when:
-- User is asking general feasibility questions
-- User is discussing hypothetical scenarios without a specific address
-- User is providing feasibility inputs (GRV, construction costs, etc.)
-- You're just having a conversation
-- User says "the property" but hasn't given you an address yet
+WHEN NOT TO USE THIS TOOL:
+❌ You're ALREADY collecting feasibility inputs (GRV, construction, LVR, timeline, etc.)
+❌ User is answering your question: "The GRV is $10M" or "70% LVR" or "Margin scheme"
+❌ User is choosing mode: "Quick feasibility" or "Detailed calculator"
+❌ General questions without address: "What's typical construction cost?"
+❌ You already looked up this property and have the data in context
 
-Examples of WHEN to use:
-✅ "What's the zoning for 123 Main St Surfers Paradise?"
-✅ "Look up lot 295RP21863"
-✅ "What can I build at 45 Hedges Avenue?"
+CRITICAL RULE FOR FEASIBILITY FLOW:
+- If you're in the middle of asking "What's the GRV?" or "What's the LVR?" → DO NOT USE THIS TOOL
+- If user is providing numbers/answers → DO NOT USE THIS TOOL
+- Only use when FIRST introducing a NEW property address
 
-Examples of WHEN NOT to use:
-❌ User: "I want to run a feasibility" (no address given)
-❌ User: "The GRV is $10M" (providing inputs, not asking about planning)
-❌ User: "What's the construction cost?" (general question)
-❌ User: "Quick or detailed calculator?" (mode selection)
-
-If unsure, ask the user for the address first. Don't call this tool "just in case".
-
-IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.`,
+This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.`,
         input_schema: {
           type: 'object',
           properties: {
@@ -826,20 +819,23 @@ Example of WRONG behavior:
 🚨 TOOL USAGE RULES (CRITICAL - READ EVERY TIME) 🚨
 
 WHEN TO USE get_property_info:
-✅ User provides address AND asks about planning controls: "What's the zoning for 123 Main St?"
+✅ User FIRST mentions a property address: "I want to talk about 271 Boundary Street Coolangatta"
 ✅ User provides lot/plan: "Look up 295RP21863"
+✅ User asks about planning: "What's the zoning for 123 Main St?"
+✅ User wants to know what can be built at a property
 
 WHEN NOT TO USE get_property_info (DO NOT CALL):
-❌ User is providing feasibility inputs: "GRV is $10M" → JUST ACCEPT THE INPUT
-❌ User wants to run a feasibility but hasn't given address → ASK for address, don't search
-❌ User is choosing quick vs detailed → JUST RESPOND, don't search
-❌ General questions: "What's a typical construction cost?" → JUST ANSWER
+❌ You're ALREADY IN feasibility input collection: "What's your GRV?" "What's the LVR?"
+❌ User is ANSWERING your question: "GRV is $10M", "70% LVR", "Margin scheme"
+❌ User is choosing mode: "Quick feasibility" or "Detailed calculator"
+❌ General questions without address: "What's a typical construction cost?"
 ❌ Greetings or chat: "Hey" → JUST RESPOND
-❌ User says "the property" but no address in context → ASK for address first
+❌ You already have property data in context for this address
 
-CRITICAL RULE: If you're about to call get_property_info, ask yourself:
-"Did the user give me a SPECIFIC address/lot and ask about PLANNING CONTROLS?"
-If NO to either part → DO NOT CALL THE TOOL
+CRITICAL RULE FOR FEASIBILITY CONVERSATIONS:
+- First mention of address → USE THE TOOL to get planning data
+- During input collection (GRV, costs, LVR, etc.) → DO NOT USE THE TOOL
+- User answering your questions → DO NOT USE THE TOOL
 
 If you're unsure whether to use a tool, DON'T - just respond conversationally.
 
