@@ -570,7 +570,34 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     const tools = [
       {
         name: 'get_property_info',
-        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. Use this for zoning questions, planning controls, what can be built, overlay information. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
+        description: `🚨 STRICT USAGE RULES - READ BEFORE CALLING:
+
+ONLY call this tool when ALL of these conditions are met:
+1. User has provided a SPECIFIC property address or lot/plan number
+2. User is asking about planning controls (zone, density, height, overlays) for THAT SPECIFIC property
+3. You need actual planning scheme data from the Gold Coast system
+
+DO NOT call this tool when:
+- User is asking general feasibility questions
+- User is discussing hypothetical scenarios without a specific address
+- User is providing feasibility inputs (GRV, construction costs, etc.)
+- You're just having a conversation
+- User says "the property" but hasn't given you an address yet
+
+Examples of WHEN to use:
+✅ "What's the zoning for 123 Main St Surfers Paradise?"
+✅ "Look up lot 295RP21863"
+✅ "What can I build at 45 Hedges Avenue?"
+
+Examples of WHEN NOT to use:
+❌ User: "I want to run a feasibility" (no address given)
+❌ User: "The GRV is $10M" (providing inputs, not asking about planning)
+❌ User: "What's the construction cost?" (general question)
+❌ User: "Quick or detailed calculator?" (mode selection)
+
+If unsure, ask the user for the address first. Don't call this tool "just in case".
+
+IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.`,
         input_schema: {
           type: 'object',
           properties: {
@@ -796,12 +823,25 @@ Example of WRONG behavior:
 - You show: "$8m GRV, $2m land" ❌ WRONG - these are from previous chat!
 - You should show: "$70m GRV, $10m land" ✅ CORRECT - from current chat
 
-TOOL USAGE RULES (CRITICAL):
-- ONLY use tools when the user is asking about a SPECIFIC PROPERTY with an address or lot/plan
-- NEVER use get_property_info or search_development_applications for greetings or general chat
-- NEVER use tools just to "check" something without a clear property target
-- If user refers to "the property" or "this site" but no address is in context, ASK for the address - don't guess or search randomly
-- If you're unsure whether to use a tool, DON'T - just respond conversationally
+🚨 TOOL USAGE RULES (CRITICAL - READ EVERY TIME) 🚨
+
+WHEN TO USE get_property_info:
+✅ User provides address AND asks about planning controls: "What's the zoning for 123 Main St?"
+✅ User provides lot/plan: "Look up 295RP21863"
+
+WHEN NOT TO USE get_property_info (DO NOT CALL):
+❌ User is providing feasibility inputs: "GRV is $10M" → JUST ACCEPT THE INPUT
+❌ User wants to run a feasibility but hasn't given address → ASK for address, don't search
+❌ User is choosing quick vs detailed → JUST RESPOND, don't search
+❌ General questions: "What's a typical construction cost?" → JUST ANSWER
+❌ Greetings or chat: "Hey" → JUST RESPOND
+❌ User says "the property" but no address in context → ASK for address first
+
+CRITICAL RULE: If you're about to call get_property_info, ask yourself:
+"Did the user give me a SPECIFIC address/lot and ask about PLANNING CONTROLS?"
+If NO to either part → DO NOT CALL THE TOOL
+
+If you're unsure whether to use a tool, DON'T - just respond conversationally.
 
 GOLD COAST DENSITY CODES (CRITICAL - GET THIS RIGHT):
 - RD1-RD4 are DWELLING density (low-medium density residential)
