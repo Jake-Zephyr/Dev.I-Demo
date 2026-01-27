@@ -8,6 +8,7 @@ import {
   splitTimeline,
   getDefaultSellingCosts
 } from './feasibility-calculator.js';
+import { parseFeasibilityInputs } from './feasibility-input-parser.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -706,20 +707,18 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
   name: 'calculate_quick_feasibility',
   description: `Calculate a quick feasibility analysis.
 
-⚠️ CRITICAL - BEFORE CALLING THIS TOOL:
-Scan the CURRENT conversation (NOT previous chats) for the most recent values user provided:
-- What did user say for GRV? (e.g., "$70m" = 70000000)
-- What did user say for land? (e.g., "$10m" = 10000000)
-- What did user say for construction? (e.g., "$30m build + $1m professional + $1m council + 5% contingency")
+🔥 NEW ARCHITECTURE - RAW STRING INPUTS ONLY 🔥
 
-⚠️ CRITICAL - PARAMETER VALUES:
-- grvTotal: Use EXACT number from CURRENT conversation (if user said "$70m", use 70000000, NOT 8000000 from previous chat)
-- landValue: Use EXACT number from CURRENT conversation (if user said "$10m", use 10000000, NOT 2000000 from previous chat)
-- constructionCost: If user provided multiple cost items, ADD THEM and include contingency
+DO NOT extract numbers. DO NOT parse values. Just pass through EXACTLY what the user said as raw strings.
 
-⚠️ DO NOT use values from previous conversations - only use what user said in THIS chat.
+Examples:
+- User said "$84M" → grvRaw: "$84M" (NOT 84000000)
+- User said "70%" → lvrRaw: "70%" (NOT 70)
+- User said "$28m build + $1m professional + $1m council fees" → constructionCostRaw: "$28m build + $1m professional + $1m council fees"
 
-ONLY use after collecting ALL required inputs from user. DO NOT call this tool until you have asked for and received all inputs.`,
+The backend will handle ALL parsing. Your job is ONLY to capture raw strings.
+
+ONLY use after collecting ALL required inputs from user.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -731,91 +730,52 @@ ONLY use after collecting ALL required inputs from user. DO NOT call this tool u
         type: 'number',
         description: 'Site area in sqm'
       },
-      projectType: {
-        type: 'string',
-        enum: ['new_build', 'knockdown_rebuild', 'renovation'],
-        description: 'Type of project'
-      },
       numUnits: {
         type: 'number',
-        description: 'Number of units'
-      },
-      unitMix: {
-        type: 'string',
-        description: 'Description of unit sizes, e.g. "4 x 150sqm" or "3 x 200sqm + 1 x 300sqm penthouse"'
+        description: 'Number of units (optional - only if user provided)'
       },
       saleableArea: {
         type: 'number',
-        description: 'Total saleable area (NSA) in sqm - calculate from unit mix'
+        description: 'Total saleable area in sqm (optional - only if user provided or needed for $/sqm GRV)'
       },
-      grvTotal: {
-        type: 'number',
-        description: 'Gross Realisation Value - total sales revenue including GST. CRITICAL: Use exact number user said. Example: if user said "GR is 8m", use 8000000 (NOT 10000000). If user said "$10M", use 10000000.'
-      },
-      grvMethod: {
+      purchasePriceRaw: {
         type: 'string',
-        enum: ['per_sqm', 'per_unit', 'total'],
-        description: 'How user provided GRV'
+        description: 'RAW user input for purchase price. Examples: "$5M", "$2m", "5 million", "$2,500/sqm". Pass through EXACTLY what user said.'
       },
-      landValue: {
-        type: 'number',
-        description: 'Land/property purchase price. CRITICAL: Use exact number user said. Example: if user said "land $2m", use 2000000 (NOT 5000000). DO NOT use default or assumed values.'
-      },
-      constructionCost: {
-        type: 'number',
-        description: 'Total construction cost - MUST be provided by user, never assumed. CRITICAL: If user provided breakdown (e.g., "build $2.5m, professional fees $200k, council fees $150k"), ADD THEM UP: 2500000 + 200000 + 150000 = 2850000.'
-      },
-      contingencyIncluded: {
-        type: 'boolean',
-        description: 'Whether contingency is included in construction cost'
-      },
-      lvr: {
-        type: 'number',
-        description: 'Loan to Value Ratio as percentage (70 = 70%, 100 = fully funded)'
-      },
-      interestRate: {
-        type: 'number',
-        description: 'Interest rate as percentage (6.75 = 6.75%)'
-      },
-      timelineMonths: {
-        type: 'number',
-        description: 'Total project timeline in months'
-      },
-      sellingCostsPercent: {
-        type: 'number',
-        description: 'Selling costs as percentage (3 = 3%)'
-      },
-      gstScheme: {
+      grvRaw: {
         type: 'string',
-        enum: ['margin', 'fully_taxed'],
-        description: 'GST treatment - margin scheme or fully taxed'
+        description: 'RAW user input for GRV. Examples: "$84M", "$30k/sqm", "70 million". Pass through EXACTLY what user said.'
       },
-      gstCostBase: {
-        type: 'number',
-        description: 'If using margin scheme, the cost base for GST calculation (usually land value)'
+      constructionCostRaw: {
+        type: 'string',
+        description: 'RAW user input for construction cost. Examples: "$28M", "$30m build + $1m professional + $1m council + 5% contingency". Pass through EXACTLY what user said.'
       },
-      buildCosts: {
-        type: 'number',
-        description: 'Base building costs (if provided separately from construction cost total)'
+      lvrRaw: {
+        type: 'string',
+        description: 'RAW user input for LVR. Examples: "70%", "70", "80 percent". Pass through EXACTLY what user said.'
       },
-      professionalFees: {
-        type: 'number',
-        description: 'Professional fees (if provided separately)'
+      interestRateRaw: {
+        type: 'string',
+        description: 'RAW user input for interest rate. Examples: "7.0%", "6.5", "8 percent". Pass through EXACTLY what user said.'
       },
-      statutoryFees: {
-        type: 'number',
-        description: 'Statutory/council fees (if provided separately)'
+      timelineRaw: {
+        type: 'string',
+        description: 'RAW user input for timeline. Examples: "18 months", "18mo", "18m", "18". Pass through EXACTLY what user said.'
       },
-      pmFees: {
-        type: 'number',
-        description: 'Project management fees (if provided separately)'
+      sellingCostsRaw: {
+        type: 'string',
+        description: 'RAW user input for selling costs. Examples: "3%", "3", "3 percent". Pass through EXACTLY what user said.'
       },
-      targetMarginPercent: {
-        type: 'number',
-        description: 'Target profit margin percentage (default 20)'
+      gstSchemeRaw: {
+        type: 'string',
+        description: 'RAW user input for GST treatment. Examples: "margin scheme", "margin", "fully taxed". Pass through EXACTLY what user said.'
+      },
+      gstCostBaseRaw: {
+        type: 'string',
+        description: 'RAW user input for GST cost base (only for margin scheme). Examples: "same as acquisition", "$5M", "5 million". Pass through EXACTLY what user said.'
       }
     },
-    required: ['numUnits', 'saleableArea', 'grvTotal', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
+    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw']
   }
 }
     ];
@@ -1103,33 +1063,53 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
   * "6.5" / "6.5%" → Accept as [6.5%]
   * "three percent" / "3" → Accept as [3%]
 
-Step 7: Parse inputs carefully, echo them back, then calculate
+Step 7: Call the tool with RAW STRING inputs
+
+🔥 NEW ARCHITECTURE - DO NOT EXTRACT NUMBERS 🔥
+
+The backend now handles ALL number parsing. Your job is to pass through EXACTLY what the user said as raw strings.
 
 ⚠️ MANDATORY PROCESS:
 
-1. Extract values from conversation:
-   - What did user say for GRV? (e.g., "12m" = 12000000)
-   - What did user say for land? (e.g., "2 mil" = 2000000)
-   - What did user say for construction? (e.g., "$5m" = 5000000)
+1. Capture what user said VERBATIM (as strings):
+   - User said "12m" for GRV → grvRaw: "12m"
+   - User said "2 mil" for land → purchasePriceRaw: "2 mil"
+   - User said "$5m" for construction → constructionCostRaw: "$5m"
+   - User said "70%" for LVR → lvrRaw: "70%"
+   - User said "8%" for interest → interestRateRaw: "8%"
+   - User said "13 months" for timeline → timelineRaw: "13 months"
+   - User said "4%" for selling → sellingCostsRaw: "4%"
 
-2. BEFORE calling the tool, show what you extracted:
+2. BEFORE calling the tool, echo back to the user:
    "Calculating with:
    - GRV: $12M (you said '12m')
    - Land: $2M (you said '2 mil')
    - Construction: $5M (you said '$5m')
    - LVR 70%, 8% interest, 13 months, 4% selling costs, margin scheme"
 
-3. THEN call calculate_quick_feasibility with these exact values:
-   - grvTotal: 12000000 (NOT 8000000, NOT 10000000)
-   - landValue: 2000000 (NOT 5000000)
-   - constructionCost: 5000000 (NOT 2950000, NOT 4000000)
+3. THEN call calculate_quick_feasibility with RAW STRINGS:
+   {
+     purchasePriceRaw: "2 mil",
+     grvRaw: "12m",
+     constructionCostRaw: "$5m",
+     lvrRaw: "70%",
+     interestRateRaw: "8%",
+     timelineRaw: "13 months",
+     sellingCostsRaw: "4%",
+     gstSchemeRaw: "margin scheme",
+     gstCostBaseRaw: "same as acquisition"
+   }
 
-⚠️ PARSING RULES:
-- "12m" = 12,000,000 (twelve million)
-- "2 mil" = 2,000,000 (two million)
-- "$5m" = 5,000,000 (five million)
-- DO NOT use different numbers than what user said
-- DO NOT use cached/default values from previous conversations
+⚠️ CRITICAL RULES:
+- DO NOT convert strings to numbers - pass them through EXACTLY as user said
+- Examples of CORRECT usage:
+  * User: "$84M" → grvRaw: "$84M" ✅
+  * User: "70%" → lvrRaw: "70%" ✅
+  * User: "$28m build + $1m professional" → constructionCostRaw: "$28m build + $1m professional" ✅
+- Examples of WRONG usage:
+  * User: "$84M" → grvRaw: 84000000 ❌ (converted to number)
+  * User: "70%" → lvrRaw: 70 ❌ (removed %)
+- The backend will handle ALL parsing - your job is ONLY to capture raw strings
 
 🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
 
@@ -1649,48 +1629,65 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
   // Handle quick feasibility calculation
 else if (toolUse.name === 'calculate_quick_feasibility') {
   console.log('[CLAUDE] ========== QUICK FEASIBILITY CALCULATION START ==========');
-  console.log('[CLAUDE] Tool inputs received:', JSON.stringify(toolUse.input, null, 2));
-  console.log('[CLAUDE] Conversation context:', JSON.stringify({
-    lastProperty: conversationContext.lastProperty,
-    lastSiteArea: conversationContext.lastSiteArea,
-    // Don't log full context, just key fields
-  }));
+  console.log('[CLAUDE] RAW inputs received from Claude:', JSON.stringify(toolUse.input, null, 2));
 
-  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
+  if (sendProgress) sendProgress('🔢 Parsing inputs with server-side parser...');
 
   const input = toolUse.input;
 
-  // CRITICAL: Log the actual values being used
-  console.log('[CLAUDE] CRITICAL VALUES:');
-  console.log('  - grvTotal (from tool input):', input.grvTotal);
-  console.log('  - landValue (from tool input):', input.landValue);
-  console.log('  - constructionCost (from tool input):', input.constructionCost);
+  // 🔥 NEW ARCHITECTURE: Parse RAW string inputs on the backend
+  // This ensures 100% accuracy by bypassing Claude's number extraction
+  const rawInputs = {
+    purchasePriceRaw: input.purchasePriceRaw,
+    grvRaw: input.grvRaw,
+    constructionCostRaw: input.constructionCostRaw,
+    lvrRaw: input.lvrRaw,
+    interestRateRaw: input.interestRateRaw,
+    timelineRaw: input.timelineRaw,
+    sellingCostsRaw: input.sellingCostsRaw,
+    gstSchemeRaw: input.gstSchemeRaw,
+    gstCostBaseRaw: input.gstCostBaseRaw,
+    saleableArea: input.saleableArea || 0,
+    numUnits: input.numUnits || 1
+  };
 
-  // Get values from input
-  const numUnits = input.numUnits;
-  const saleableArea = input.saleableArea;
-  const grvTotal = input.grvTotal;
-  const landValue = input.landValue || 0;
-  const constructionCost = input.constructionCost;
-  const lvr = input.lvr;
-  const interestRate = input.interestRate;
-  const timelineMonths = input.timelineMonths;
-  const sellingCostsPercent = input.sellingCostsPercent;
-  const gstScheme = input.gstScheme || 'margin';
-  const gstCostBase = input.gstCostBase || landValue;
-  const contingencyIncluded = input.contingencyIncluded !== false;
+  console.log('[CLAUDE] Calling parseFeasibilityInputs() with raw strings...');
+  const parsed = parseFeasibilityInputs(rawInputs);
+  console.log('[CLAUDE] PARSED VALUES (from server-side parser):');
+  console.log('  - landValue:', parsed.landValue);
+  console.log('  - grvTotal:', parsed.grvTotal);
+  console.log('  - constructionCost:', parsed.constructionCost);
+  console.log('  - lvr:', parsed.lvr);
+  console.log('  - interestRate:', parsed.interestRate);
+  console.log('  - timelineMonths:', parsed.timelineMonths);
+  console.log('  - sellingCostsPercent:', parsed.sellingCostsPercent);
+  console.log('  - gstScheme:', parsed.gstScheme);
+  console.log('  - gstCostBase:', parsed.gstCostBase);
+
+  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
+
+  // Use parsed values for calculation
+  const numUnits = parsed.numUnits;
+  const saleableArea = parsed.saleableArea;
+  const grvTotal = parsed.grvTotal;
+  const landValue = parsed.landValue;
+  const constructionCost = parsed.constructionCost;
+  const lvr = parsed.lvr;
+  const interestRate = parsed.interestRate;
+  const timelineMonths = parsed.timelineMonths;
+  const sellingCostsPercent = parsed.sellingCostsPercent;
+  const gstScheme = parsed.gstScheme;
+  const gstCostBase = parsed.gstCostBase;
 
   // Get property context
   const propertyAddress = input.propertyAddress || conversationContext.lastProperty || '';
   const siteArea = input.siteArea || conversationContext.lastSiteArea || 0;
-  const densityCode = input.densityCode || conversationContext.lastDensity || '';
-  const heightLimit = input.heightLimit || conversationContext.lastHeight || '';
+  const densityCode = conversationContext.lastDensity || '';
+  const heightLimit = conversationContext.lastHeight || '';
 
-  // Add contingency if not included
-  const contingencyPercent = contingencyIncluded ? 0 : 5;
-  const constructionWithContingency = contingencyIncluded
-    ? constructionCost
-    : constructionCost * 1.05;
+  // Contingency is handled in parseConstructionCost
+  const contingencyPercent = parsed.constructionBreakdown?.contingencyPercent || 0;
+  const constructionWithContingency = constructionCost;
 
   // Convert percentages to decimals
   const lvrDecimal = lvr / 100;
