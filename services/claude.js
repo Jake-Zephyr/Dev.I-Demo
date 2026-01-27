@@ -866,9 +866,12 @@ WHEN NOT TO USE get_property_info (DO NOT CALL):
 ❌ You're ALREADY IN feasibility input collection: "What's your GRV?" "What's the LVR?"
 ❌ User is ANSWERING your question: "GRV is $10M", "70% LVR", "Margin scheme"
 ❌ User is choosing mode: "Quick feasibility" or "Detailed calculator"
+❌ User is complaining about results: "wrong", "that's incorrect", "you're wrong"
+❌ User is frustrated or swearing - just apologize and ask what's wrong
 ❌ General questions without address: "What's a typical construction cost?"
 ❌ Greetings or chat: "Hey" → JUST RESPOND
 ❌ You already have property data in context for this address
+❌ You just showed feasibility results - user is responding to those results
 
 CRITICAL RULE FOR FEASIBILITY CONVERSATIONS:
 - First mention of address → USE THE TOOL to get planning data
@@ -1140,50 +1143,51 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
 Step 7: Call the tool with RAW STRING inputs
 
 🔥 NEW ARCHITECTURE - DO NOT EXTRACT NUMBERS 🔥
+🔥 DO NOT PARSE - DO NOT CONVERT - JUST COPY WHAT USER SAID 🔥
 
 The backend now handles ALL number parsing. Your job is to pass through EXACTLY what the user said as raw strings.
 
-⚠️ MANDATORY PROCESS:
+⚠️ REAL EXAMPLE (FOLLOW THIS EXACT PATTERN):
 
-1. Capture what user said VERBATIM (as strings):
-   - User said "12m" for GRV → grvRaw: "12m"
-   - User said "2 mil" for land → purchasePriceRaw: "2 mil"
-   - User said "$5m" for construction → constructionCostRaw: "$5m"
-   - User said "70%" for LVR → lvrRaw: "70%"
-   - User said "8%" for interest → interestRateRaw: "8%"
-   - User said "13 months" for timeline → timelineRaw: "13 months"
-   - User said "4%" for selling → sellingCostsRaw: "4%"
+User says: "GR will be $12,333,333, costs will be $4,555,000, im buying the site for $1,595,374"
 
-2. BEFORE calling the tool, echo back to the user:
-   "Calculating with:
-   - GRV: $12M (you said '12m')
-   - Land: $2M (you said '2 mil')
-   - Construction: $5M (you said '$5m')
-   - LVR 70%, 8% interest, 13 months, 4% selling costs, margin scheme"
+YOU MUST DO THIS:
+{
+  purchasePriceRaw: "$1,595,374",      ✅ EXACT copy of what user said
+  grvRaw: "$12,333,333",               ✅ EXACT copy of what user said
+  constructionCostRaw: "$4,555,000",   ✅ EXACT copy of what user said
+  lvrRaw: "70%",
+  interestRateRaw: "7.5%",
+  timelineRaw: "12",
+  sellingCostsRaw: "4%",
+  gstSchemeRaw: "margin scheme"
+}
 
-3. THEN call calculate_quick_feasibility with RAW STRINGS:
-   {
-     purchasePriceRaw: "2 mil",
-     grvRaw: "12m",
-     constructionCostRaw: "$5m",
-     lvrRaw: "70%",
-     interestRateRaw: "8%",
-     timelineRaw: "13 months",
-     sellingCostsRaw: "4%",
-     gstSchemeRaw: "margin scheme",
-     gstCostBaseRaw: "same as acquisition"
-   }
+DO NOT DO THIS (WRONG):
+{
+  grvTotal: 10000000,           ❌ You converted and got WRONG number
+  landValue: 2000000,           ❌ You converted and got WRONG number
+  constructionCost: 3200000     ❌ You converted and got WRONG number
+}
 
 ⚠️ CRITICAL RULES:
-- DO NOT convert strings to numbers - pass them through EXACTLY as user said
-- Examples of CORRECT usage:
-  * User: "$84M" → grvRaw: "$84M" ✅
-  * User: "70%" → lvrRaw: "70%" ✅
-  * User: "$28m build + $1m professional" → constructionCostRaw: "$28m build + $1m professional" ✅
-- Examples of WRONG usage:
-  * User: "$84M" → grvRaw: 84000000 ❌ (converted to number)
-  * User: "70%" → lvrRaw: 70 ❌ (removed %)
-- The backend will handle ALL parsing - your job is ONLY to capture raw strings
+1. DO NOT extract numbers - copy the string EXACTLY
+2. DO NOT parse values - copy the string EXACTLY
+3. DO NOT convert to numbers - copy the string EXACTLY
+4. If user said "$12,333,333" → grvRaw: "$12,333,333" (with commas and dollar sign)
+5. If user said "$1,595,374" → purchasePriceRaw: "$1,595,374" (with commas and dollar sign)
+6. The backend parser will handle commas, dollar signs, and formatting
+7. Your ONLY job is to copy what the user said into the Raw parameters
+
+⚠️ PARAMETER NAMES - USE THESE (with Raw suffix):
+- purchasePriceRaw (NOT landValue)
+- grvRaw (NOT grvTotal)
+- constructionCostRaw (NOT constructionCost)
+- lvrRaw (NOT lvr)
+- interestRateRaw (NOT interestRate)
+- timelineRaw (NOT timelineMonths)
+- sellingCostsRaw (NOT sellingCostsPercent)
+- gstSchemeRaw (NOT gstScheme)
 
 🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
 
@@ -1716,11 +1720,21 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   const hasNewParams = input.purchasePriceRaw !== undefined;
   const hasOldParams = input.landValue !== undefined || input.grvTotal !== undefined;
 
-  console.log('[CLAUDE] Parameter detection:', {
-    hasNewParams,
-    hasOldParams,
-    parameterNames: Object.keys(input)
-  });
+  console.log('[CLAUDE] ========== PARAMETER DETECTION ==========');
+  console.log('[CLAUDE] Has NEW params (purchasePriceRaw, grvRaw, etc.):', hasNewParams);
+  console.log('[CLAUDE] Has OLD params (landValue, grvTotal, etc.):', hasOldParams);
+  console.log('[CLAUDE] Parameter names received:', Object.keys(input));
+  console.log('[CLAUDE] First 3 parameter values:');
+  if (hasNewParams) {
+    console.log('  purchasePriceRaw:', input.purchasePriceRaw);
+    console.log('  grvRaw:', input.grvRaw);
+    console.log('  constructionCostRaw:', input.constructionCostRaw);
+  } else if (hasOldParams) {
+    console.log('  landValue:', input.landValue);
+    console.log('  grvTotal:', input.grvTotal);
+    console.log('  constructionCost:', input.constructionCost);
+  }
+  console.log('[CLAUDE] ========================================');
 
   let parsed;
 
