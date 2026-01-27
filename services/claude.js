@@ -727,18 +727,17 @@ This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searche
   name: 'calculate_quick_feasibility',
   description: `Calculate a quick feasibility analysis.
 
-🔥 NEW ARCHITECTURE - RAW STRING INPUTS ONLY 🔥
+🔥 NEW ARCHITECTURE - RAW STRING INPUTS (PREFERRED) 🔥
 
-DO NOT extract numbers. DO NOT parse values. Just pass through EXACTLY what the user said as raw strings.
+PREFERRED: Pass through EXACTLY what the user said as raw strings:
+- User said "$3M" → purchasePriceRaw: "$3M"
+- User said "$10M" → grvRaw: "$10M"
+- User said "about $3m" → constructionCostRaw: "about $3m"
+- User said "80%" → lvrRaw: "80%"
 
-Examples:
-- User said "$84M" → grvRaw: "$84M" (NOT 84000000)
-- User said "70%" → lvrRaw: "70%" (NOT 70)
-- User said "$28m build + $1m professional + $1m council fees" → constructionCostRaw: "$28m build + $1m professional + $1m council fees"
+The backend will handle ALL parsing for 100% accuracy.
 
-The backend will handle ALL parsing. Your job is ONLY to capture raw strings.
-
-ONLY use after collecting ALL required inputs from user.`,
+BACKWARD COMPATIBILITY: Old number parameters (landValue, grvTotal, etc.) still work if needed.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -752,50 +751,89 @@ ONLY use after collecting ALL required inputs from user.`,
       },
       numUnits: {
         type: 'number',
-        description: 'Number of units (optional - only if user provided)'
+        description: 'Number of units (optional)'
       },
       saleableArea: {
         type: 'number',
-        description: 'Total saleable area in sqm (optional - only if user provided or needed for $/sqm GRV)'
+        description: 'Total saleable area in sqm (optional)'
       },
+      // NEW PARAMETERS (raw strings - PREFERRED)
       purchasePriceRaw: {
         type: 'string',
-        description: 'RAW user input for purchase price. Examples: "$5M", "$2m", "5 million", "$2,500/sqm". Pass through EXACTLY what user said.'
+        description: 'RAW user input for purchase price. Examples: "$3M", "$5m", "5 million". Pass through EXACTLY what user said.'
       },
       grvRaw: {
         type: 'string',
-        description: 'RAW user input for GRV. Examples: "$84M", "$30k/sqm", "70 million". Pass through EXACTLY what user said.'
+        description: 'RAW user input for GRV. Examples: "$10M", "$84M", "70 million". Pass through EXACTLY what user said.'
       },
       constructionCostRaw: {
         type: 'string',
-        description: 'RAW user input for construction cost. Examples: "$28M", "$30m build + $1m professional + $1m council + 5% contingency". Pass through EXACTLY what user said.'
+        description: 'RAW user input for construction cost. Examples: "$3M", "about $3m", "$28m build + fees". Pass through EXACTLY what user said.'
       },
       lvrRaw: {
         type: 'string',
-        description: 'RAW user input for LVR. Examples: "70%", "70", "80 percent". Pass through EXACTLY what user said.'
+        description: 'RAW user input for LVR. Examples: "80%", "70", "fully funded". Pass through EXACTLY what user said.'
       },
       interestRateRaw: {
         type: 'string',
-        description: 'RAW user input for interest rate. Examples: "7.0%", "6.5", "8 percent". Pass through EXACTLY what user said.'
+        description: 'RAW user input for interest rate. Examples: "7.0%", "7.0", "6.5 percent". Pass through EXACTLY what user said.'
       },
       timelineRaw: {
         type: 'string',
-        description: 'RAW user input for timeline. Examples: "18 months", "18mo", "18m", "18". Pass through EXACTLY what user said.'
+        description: 'RAW user input for timeline. Examples: "12 months", "12", "18mo". Pass through EXACTLY what user said.'
       },
       sellingCostsRaw: {
         type: 'string',
-        description: 'RAW user input for selling costs. Examples: "3%", "3", "3 percent". Pass through EXACTLY what user said.'
+        description: 'RAW user input for selling costs. Examples: "3%", "3", "4 percent". Pass through EXACTLY what user said.'
       },
       gstSchemeRaw: {
         type: 'string',
-        description: 'RAW user input for GST treatment. Examples: "margin scheme", "margin", "fully taxed". Pass through EXACTLY what user said.'
+        description: 'RAW user input for GST. Examples: "fully taxed", "margin scheme", "margin". Pass through EXACTLY what user said.'
       },
       gstCostBaseRaw: {
         type: 'string',
-        description: 'RAW user input for GST cost base (only for margin scheme). Examples: "same as acquisition", "$5M", "5 million". Pass through EXACTLY what user said.'
+        description: 'RAW user input for GST cost base (margin scheme only). Examples: "same as acquisition", "$5M". Pass through EXACTLY what user said.'
+      },
+      // OLD PARAMETERS (numbers - backward compatibility)
+      landValue: {
+        type: 'number',
+        description: 'Land purchase price (backward compatibility - prefer purchasePriceRaw)'
+      },
+      grvTotal: {
+        type: 'number',
+        description: 'GRV total (backward compatibility - prefer grvRaw)'
+      },
+      constructionCost: {
+        type: 'number',
+        description: 'Construction cost (backward compatibility - prefer constructionCostRaw)'
+      },
+      lvr: {
+        type: 'number',
+        description: 'LVR as percentage (backward compatibility - prefer lvrRaw)'
+      },
+      interestRate: {
+        type: 'number',
+        description: 'Interest rate as percentage (backward compatibility - prefer interestRateRaw)'
+      },
+      timelineMonths: {
+        type: 'number',
+        description: 'Timeline in months (backward compatibility - prefer timelineRaw)'
+      },
+      sellingCostsPercent: {
+        type: 'number',
+        description: 'Selling costs as percentage (backward compatibility - prefer sellingCostsRaw)'
+      },
+      gstScheme: {
+        type: 'string',
+        enum: ['margin', 'fully_taxed'],
+        description: 'GST scheme (backward compatibility - prefer gstSchemeRaw)'
+      },
+      gstCostBase: {
+        type: 'number',
+        description: 'GST cost base (backward compatibility - prefer gstCostBaseRaw)'
       }
     },
-    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw']
+    required: []  // No required fields for flexibility
   }
 }
     ];
@@ -1673,23 +1711,64 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
 
   // 🔥 NEW ARCHITECTURE: Parse RAW string inputs on the backend
   // This ensures 100% accuracy by bypassing Claude's number extraction
-  const rawInputs = {
-    purchasePriceRaw: input.purchasePriceRaw,
-    grvRaw: input.grvRaw,
-    constructionCostRaw: input.constructionCostRaw,
-    lvrRaw: input.lvrRaw,
-    interestRateRaw: input.interestRateRaw,
-    timelineRaw: input.timelineRaw,
-    sellingCostsRaw: input.sellingCostsRaw,
-    gstSchemeRaw: input.gstSchemeRaw,
-    gstCostBaseRaw: input.gstCostBaseRaw,
-    saleableArea: input.saleableArea || 0,
-    numUnits: input.numUnits || 1
-  };
 
-  console.log('[CLAUDE] Calling parseFeasibilityInputs() with raw strings...');
-  const parsed = parseFeasibilityInputs(rawInputs);
-  console.log('[CLAUDE] PARSED VALUES (from server-side parser):');
+  // Check if we have NEW raw string params or OLD number params (backward compatibility)
+  const hasNewParams = input.purchasePriceRaw !== undefined;
+  const hasOldParams = input.landValue !== undefined || input.grvTotal !== undefined;
+
+  console.log('[CLAUDE] Parameter detection:', {
+    hasNewParams,
+    hasOldParams,
+    parameterNames: Object.keys(input)
+  });
+
+  let parsed;
+
+  if (hasNewParams) {
+    // NEW ARCHITECTURE: Use raw string inputs with parser
+    console.log('[CLAUDE] Using NEW architecture (raw strings + parser)');
+    const rawInputs = {
+      purchasePriceRaw: input.purchasePriceRaw,
+      grvRaw: input.grvRaw,
+      constructionCostRaw: input.constructionCostRaw,
+      lvrRaw: input.lvrRaw,
+      interestRateRaw: input.interestRateRaw,
+      timelineRaw: input.timelineRaw,
+      sellingCostsRaw: input.sellingCostsRaw,
+      gstSchemeRaw: input.gstSchemeRaw,
+      gstCostBaseRaw: input.gstCostBaseRaw,
+      saleableArea: input.saleableArea || 0,
+      numUnits: input.numUnits || 1
+    };
+
+    console.log('[CLAUDE] Calling parseFeasibilityInputs() with raw strings...');
+    parsed = parseFeasibilityInputs(rawInputs);
+  } else if (hasOldParams) {
+    // OLD ARCHITECTURE: Use numbers directly (backward compatibility)
+    console.log('[CLAUDE] Using OLD architecture (direct numbers) - FALLBACK MODE');
+    parsed = {
+      landValue: input.landValue || 0,
+      grvTotal: input.grvTotal || 0,
+      constructionCost: input.constructionCost || 0,
+      lvr: input.lvr || 0,
+      interestRate: input.interestRate || 0,
+      timelineMonths: input.timelineMonths || 0,
+      sellingCostsPercent: input.sellingCostsPercent || 0,
+      gstScheme: input.gstScheme || 'margin',
+      gstCostBase: input.gstCostBase || input.landValue || 0,
+      numUnits: input.numUnits || 1,
+      saleableArea: input.saleableArea || 1,
+      constructionBreakdown: {
+        contingencyPercent: 0
+      }
+    };
+  } else {
+    // ERROR: No valid parameters
+    console.error('[CLAUDE] ERROR: No valid parameters found in tool input!');
+    throw new Error('Missing required feasibility parameters');
+  }
+
+  console.log('[CLAUDE] PARSED VALUES:');
   console.log('  - landValue:', parsed.landValue);
   console.log('  - grvTotal:', parsed.grvTotal);
   console.log('  - constructionCost:', parsed.constructionCost);
