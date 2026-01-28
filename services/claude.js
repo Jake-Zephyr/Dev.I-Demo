@@ -8,7 +8,7 @@ import {
   splitTimeline,
   getDefaultSellingCosts
 } from './feasibility-calculator.js';
-import { parseFeasibilityInputs } from './feasibility-input-parser.js';
+import { calculateQuickFeasibility, formatFeasibilityResponse } from './quick-feasibility-engine.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -725,115 +725,56 @@ This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searche
       },
       {
   name: 'calculate_quick_feasibility',
-  description: `Calculate a quick feasibility analysis.
-
-🔥 NEW ARCHITECTURE - RAW STRING INPUTS (PREFERRED) 🔥
-
-PREFERRED: Pass through EXACTLY what the user said as raw strings:
-- User said "$3M" → purchasePriceRaw: "$3M"
-- User said "$10M" → grvRaw: "$10M"
-- User said "about $3m" → constructionCostRaw: "about $3m"
-- User said "80%" → lvrRaw: "80%"
-
-The backend will handle ALL parsing for 100% accuracy.
-
-BACKWARD COMPATIBILITY: Old number parameters (landValue, grvTotal, etc.) still work if needed.`,
+  description: `Calculate a quick feasibility analysis. Provide the inputs the user gave you - the backend handles all parsing and calculations.`,
   input_schema: {
     type: 'object',
     properties: {
       propertyAddress: {
         type: 'string',
-        description: 'Property address'
+        description: 'Property address (optional)'
       },
-      siteArea: {
-        type: 'number',
-        description: 'Site area in sqm'
-      },
-      numUnits: {
-        type: 'number',
-        description: 'Number of units (optional)'
-      },
-      saleableArea: {
-        type: 'number',
-        description: 'Total saleable area in sqm (optional)'
-      },
-      // NEW PARAMETERS (raw strings - PREFERRED)
-      purchasePriceRaw: {
-        type: 'string',
-        description: 'RAW user input for purchase price. Examples: "$3M", "$5m", "5 million". Pass through EXACTLY what user said.'
-      },
-      grvRaw: {
-        type: 'string',
-        description: 'RAW user input for GRV. Examples: "$10M", "$84M", "70 million". Pass through EXACTLY what user said.'
-      },
-      constructionCostRaw: {
-        type: 'string',
-        description: 'RAW user input for construction cost. Examples: "$3M", "about $3m", "$28m build + fees". Pass through EXACTLY what user said.'
-      },
-      lvrRaw: {
-        type: 'string',
-        description: 'RAW user input for LVR. Examples: "80%", "70", "fully funded". Pass through EXACTLY what user said.'
-      },
-      interestRateRaw: {
-        type: 'string',
-        description: 'RAW user input for interest rate. Examples: "7.0%", "7.0", "6.5 percent". Pass through EXACTLY what user said.'
-      },
-      timelineRaw: {
-        type: 'string',
-        description: 'RAW user input for timeline. Examples: "12 months", "12", "18mo". Pass through EXACTLY what user said.'
-      },
-      sellingCostsRaw: {
-        type: 'string',
-        description: 'RAW user input for selling costs. Examples: "3%", "3", "4 percent". Pass through EXACTLY what user said.'
-      },
-      gstSchemeRaw: {
-        type: 'string',
-        description: 'RAW user input for GST. Examples: "fully taxed", "margin scheme", "margin". Pass through EXACTLY what user said.'
-      },
-      gstCostBaseRaw: {
-        type: 'string',
-        description: 'RAW user input for GST cost base (margin scheme only). Examples: "same as acquisition", "$5M". Pass through EXACTLY what user said.'
-      },
-      // OLD PARAMETERS (numbers - backward compatibility)
       landValue: {
-        type: 'number',
-        description: 'Land purchase price (backward compatibility - prefer purchasePriceRaw)'
+        type: 'string',
+        description: 'Land/property purchase price. Examples: "$10M", "10m", "$10,000,000"'
       },
-      grvTotal: {
-        type: 'number',
-        description: 'GRV total (backward compatibility - prefer grvRaw)'
+      grvInclGST: {
+        type: 'string',
+        description: 'Gross Realisation Value including GST. Examples: "$45M", "45m", "$45,000,000"'
       },
       constructionCost: {
-        type: 'number',
-        description: 'Construction cost (backward compatibility - prefer constructionCostRaw)'
+        type: 'string',
+        description: 'Total construction cost. Examples: "$10M", "10 million", "$10,000,000"'
       },
       lvr: {
-        type: 'number',
-        description: 'LVR as percentage (backward compatibility - prefer lvrRaw)'
+        type: 'string',
+        description: 'Loan to Value Ratio. Examples: "80%", "80", "70%"'
       },
       interestRate: {
-        type: 'number',
-        description: 'Interest rate as percentage (backward compatibility - prefer interestRateRaw)'
+        type: 'string',
+        description: 'Interest rate. Examples: "8.5%", "8.5", "6.5%"'
       },
       timelineMonths: {
-        type: 'number',
-        description: 'Timeline in months (backward compatibility - prefer timelineRaw)'
+        type: 'string',
+        description: 'Project timeline. Examples: "18", "18 months", "12"'
       },
       sellingCostsPercent: {
-        type: 'number',
-        description: 'Selling costs as percentage (backward compatibility - prefer sellingCostsRaw)'
+        type: 'string',
+        description: 'Selling costs percentage. Examples: "3%", "3", "4%"'
       },
       gstScheme: {
         type: 'string',
-        enum: ['margin', 'fully_taxed'],
-        description: 'GST scheme (backward compatibility - prefer gstSchemeRaw)'
+        description: 'GST scheme. Examples: "margin scheme", "fully taxed", "margin"'
       },
       gstCostBase: {
+        type: 'string',
+        description: 'GST cost base for margin scheme (optional). Examples: "same as acquisition", "$10M", "10m"'
+      },
+      targetMargin: {
         type: 'number',
-        description: 'GST cost base (backward compatibility - prefer gstCostBaseRaw)'
+        description: 'Target developer margin percentage (optional, default 20)'
       }
     },
-    required: []  // No required fields for flexibility
+    required: ['landValue', 'grvInclGST', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
   }
 }
     ];
