@@ -2,13 +2,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
-import {
-  calculateLandTaxQLD,
-  calculateTargetMargin,
-  splitTimeline,
-  getDefaultSellingCosts
-} from './feasibility-calculator.js';
-import { calculateQuickFeasibility, formatFeasibilityResponse } from './quick-feasibility-engine.js';
+import { getDetailedFeasibilityPreFill } from './feasibility-calculator.js';
+import { runQuickFeasibility, runResidualAnalysis } from './quick-feasibility-engine.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -725,56 +720,28 @@ This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searche
       },
       {
   name: 'calculate_quick_feasibility',
-  description: `Calculate a quick feasibility analysis. Provide the inputs the user gave you - the backend handles all parsing and calculations.`,
+  description: `Calculate a quick feasibility. Pass EXACTLY what the user typed as raw strings. The backend handles ALL parsing and calculation. You will receive a pre-formatted response to display VERBATIM.
+
+CRITICAL: Copy the user's EXACT words into the Raw fields. Do NOT convert numbers.
+Example: User said "$10M" → purchasePriceRaw: "$10M" (not 10000000)
+Example: User said "$45m" → grvRaw: "$45m" (not 45000000)
+Example: User said "80%" → lvrRaw: "80%" (not 80)`,
   input_schema: {
     type: 'object',
     properties: {
-      propertyAddress: {
-        type: 'string',
-        description: 'Property address (optional)'
-      },
-      landValue: {
-        type: 'string',
-        description: 'Land/property purchase price. Examples: "$10M", "10m", "$10,000,000"'
-      },
-      grvInclGST: {
-        type: 'string',
-        description: 'Gross Realisation Value including GST. Examples: "$45M", "45m", "$45,000,000"'
-      },
-      constructionCost: {
-        type: 'string',
-        description: 'Total construction cost. Examples: "$10M", "10 million", "$10,000,000"'
-      },
-      lvr: {
-        type: 'string',
-        description: 'Loan to Value Ratio. Examples: "80%", "80", "70%"'
-      },
-      interestRate: {
-        type: 'string',
-        description: 'Interest rate. Examples: "8.5%", "8.5", "6.5%"'
-      },
-      timelineMonths: {
-        type: 'string',
-        description: 'Project timeline. Examples: "18", "18 months", "12"'
-      },
-      sellingCostsPercent: {
-        type: 'string',
-        description: 'Selling costs percentage. Examples: "3%", "3", "4%"'
-      },
-      gstScheme: {
-        type: 'string',
-        description: 'GST scheme. Examples: "margin scheme", "fully taxed", "margin"'
-      },
-      gstCostBase: {
-        type: 'string',
-        description: 'GST cost base for margin scheme (optional). Examples: "same as acquisition", "$10M", "10m"'
-      },
-      targetMargin: {
-        type: 'number',
-        description: 'Target developer margin percentage (optional, default 20)'
-      }
+      propertyAddress: { type: 'string', description: 'Property address from conversation context' },
+      purchasePriceRaw: { type: 'string', description: 'EXACT user input for purchase price. e.g. "$10M", "$5,000,000", "5 million"' },
+      grvRaw: { type: 'string', description: 'EXACT user input for GRV. e.g. "$45M", "$12,333,333", "70 million"' },
+      constructionCostRaw: { type: 'string', description: 'EXACT user input for construction cost. e.g. "$10M", "$10,000,000"' },
+      lvrRaw: { type: 'string', description: 'EXACT user input for LVR. e.g. "80%", "70", "fully funded"' },
+      interestRateRaw: { type: 'string', description: 'EXACT user input for interest rate. e.g. "8.5", "7.0%", "6.5 percent"' },
+      timelineRaw: { type: 'string', description: 'EXACT user input for timeline. e.g. "18", "24 months", "2 years"' },
+      sellingCostsRaw: { type: 'string', description: 'EXACT user input for selling costs. e.g. "3%", "4"' },
+      gstSchemeRaw: { type: 'string', description: 'EXACT user input for GST. e.g. "margin scheme", "fully taxed"' },
+      gstCostBaseRaw: { type: 'string', description: 'EXACT user input for GST cost base. e.g. "same as acquisition", "$5M"' },
+      mode: { type: 'string', enum: ['standard', 'residual'], description: 'standard = full feasibility with land price. residual = calculate max land price.' }
     },
-    required: ['landValue', 'grvInclGST', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
+    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw']
   }
 }
     ];
@@ -1081,214 +1048,50 @@ CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
   * "6.5" / "6.5%" → Accept as [6.5%]
   * "three percent" / "3" → Accept as [3%]
 
-Step 7: Call the tool with RAW STRING inputs
+CALLING THE TOOL - HOW TO PASS INPUTS:
 
-🔥 NEW ARCHITECTURE - DO NOT EXTRACT NUMBERS 🔥
-🔥 DO NOT PARSE - DO NOT CONVERT - JUST COPY WHAT USER SAID 🔥
+When you have ALL required inputs, call calculate_quick_feasibility.
+Pass EXACTLY what the user typed as raw strings. DO NOT convert to numbers.
 
-The backend now handles ALL number parsing. Your job is to pass through EXACTLY what the user said as raw strings.
-
-⚠️ REAL EXAMPLE (FOLLOW THIS EXACT PATTERN):
-
-User says: "GR will be $12,333,333, costs will be $4,555,000, im buying the site for $1,595,374"
-
-YOU MUST DO THIS:
+Example: User said "$10M" for land, "$45m" for GRV, "$10,000,000" for construction:
 {
-  purchasePriceRaw: "$1,595,374",      ✅ EXACT copy of what user said
-  grvRaw: "$12,333,333",               ✅ EXACT copy of what user said
-  constructionCostRaw: "$4,555,000",   ✅ EXACT copy of what user said
-  lvrRaw: "70%",
-  interestRateRaw: "7.5%",
-  timelineRaw: "12",
-  sellingCostsRaw: "4%",
-  gstSchemeRaw: "margin scheme"
+  propertyAddress: "247 Hedges Avenue, Mermaid Beach",
+  purchasePriceRaw: "$10M",
+  grvRaw: "$45m",
+  constructionCostRaw: "$10,000,000",
+  lvrRaw: "80%",
+  interestRateRaw: "8.5",
+  timelineRaw: "18",
+  sellingCostsRaw: "3%",
+  gstSchemeRaw: "margin scheme",
+  gstCostBaseRaw: "same as acquisition"
 }
 
-DO NOT DO THIS (WRONG):
-{
-  grvTotal: 10000000,           ❌ You converted and got WRONG number
-  landValue: 2000000,           ❌ You converted and got WRONG number
-  constructionCost: 3200000     ❌ You converted and got WRONG number
-}
+The backend handles ALL parsing and calculation. It returns a complete pre-formatted response.
+Your ONLY job after calling the tool: display the formattedResponse from the tool result VERBATIM.
+Do NOT add to it, modify it, or recalculate anything. Just output it exactly as received.
 
-⚠️ CRITICAL RULES:
-1. DO NOT extract numbers - copy the string EXACTLY
-2. DO NOT parse values - copy the string EXACTLY
-3. DO NOT convert to numbers - copy the string EXACTLY
-4. If user said "$12,333,333" → grvRaw: "$12,333,333" (with commas and dollar sign)
-5. If user said "$1,595,374" → purchasePriceRaw: "$1,595,374" (with commas and dollar sign)
-6. The backend parser will handle commas, dollar signs, and formatting
-7. Your ONLY job is to copy what the user said into the Raw parameters
+REQUIRED INPUTS (must collect ALL before calling tool):
+1. Purchase price / Land value
+2. GRV (Gross Realisation Value)
+3. Construction cost (total)
+4. LVR (Loan to Value Ratio)
+5. Interest rate
+6. Timeline in months
+7. Selling costs percentage
+8. GST scheme (and cost base if margin scheme)
 
-⚠️ PARAMETER NAMES - USE THESE (with Raw suffix):
-- purchasePriceRaw (NOT landValue)
-- grvRaw (NOT grvTotal)
-- constructionCostRaw (NOT constructionCost)
-- lvrRaw (NOT lvr)
-- interestRateRaw (NOT interestRate)
-- timelineRaw (NOT timelineMonths)
-- sellingCostsRaw (NOT sellingCostsPercent)
-- gstSchemeRaw (NOT gstScheme)
-
-🚨 STOP - READ THIS BEFORE PRESENTING RESULTS 🚨
-
-CRITICAL CHECKLIST:
-1. Did you call calculate_quick_feasibility tool? ☐ YES ☐ NO
-2. Did the tool return success: true? ☐ YES ☐ NO
-3. Are you about to present tool results or make up numbers? ☐ TOOL RESULTS ☐ MAKING UP
-
-If you answered YES to questions 1 and 2, and TOOL RESULTS to question 3:
-→ Present the tool result values EXACTLY as they are
-→ DO NOT verify against what you remember user saying
-→ DO NOT modify or adjust the numbers
-→ The backend parser already handled everything correctly
-
-If you answered NO to question 1 or 2:
-→ The tool failed - tell user "I couldn't calculate the feasibility. Please try again."
-
-If you answered MAKING UP to question 3:
-→ STOP! Call the tool first, then present its results
-
-⚠️ DO NOT STREAM RESULTS WHILE WAITING FOR TOOL
-You might be tempted to start writing "Revenue: $..." while the tool is processing.
-DO NOT DO THIS. Wait for the tool to complete, then present tool results ONLY.
-
-CRITICAL - PRESENTING FEASIBILITY RESULTS:
-⚠️ ABSOLUTE RULES - NEVER VIOLATE THESE:
-1. You MUST call calculate_quick_feasibility tool - do NOT calculate manually
-2. You MUST wait for the tool to return results - do NOT generate results while waiting
-3. You MUST present ONLY what the tool returns - NEVER make up numbers
-4. If the tool fails or returns an error, say "I couldn't calculate the feasibility. Please try again."
-5. NEVER present different numbers than the tool output - this includes:
-   - Land value (use costs.land from tool result, NOT what you remember)
-   - GRV (use revenue.grvInclGST from tool result, NOT what user said)
-   - Construction costs (use costs.construction from tool result)
-   - Profit/loss (use profitability.grossProfit from tool result)
-
-⚠️ COMMON MISTAKE: Showing "$8M GRV" when user said "$12M"
-This happens when you use the INPUT (what user said) instead of OUTPUT (what tool returned).
-Always use tool.revenue.grvInclGST, NOT what you remember user saying.
-
-WHY YOU MAKE MISTAKES:
-- You try to be helpful by calculating during streaming
-- You mix up remembered values with calculated values
-- You use the INPUTS instead of the OUTPUTS
-SOLUTION: Wait for tool, copy tool output exactly, do NOT improvise.
-
-The tool output contains these fields (use them EXACTLY):
-- inputs.numUnits, inputs.saleableArea, inputs.constructionCost
-- revenue.grvInclGST, revenue.grvExclGST, revenue.avgPricePerUnit
-- costs.land, costs.construction, costs.selling, costs.finance, costs.holding, costs.total
-- profitability.grossProfit, profitability.profitMargin, profitability.viability
-- residual.residualLandValue
-
-🚨 CRITICAL: TRUST THE TOOL RESULT - DO NOT SECOND-GUESS IT
-
-The backend parser is deterministic and accurate. Whatever numbers the tool returns are CORRECT.
-
-NEVER say:
-❌ "Hmm, these numbers don't match what you said..."
-❌ "Let me check if the tool got the right values..."
-❌ "The results seem different from your inputs..."
-
-ALWAYS:
-✅ Present the tool result values EXACTLY as they are
-✅ Use revenue.grvInclGST, costs.land, costs.construction from the tool result
-✅ DO NOT try to "remember" what the user said - use the tool result
-
-If the tool returns success: true, then the calculation worked. Present the results.
-
-PRESENTING RESULTS - MANDATORY FORMAT:
-When showing feasibility results, you MUST use this EXACT format:
-
-🚨 CRITICAL: Use ONLY the numbers from the tool result. DO NOT use what you remember from conversation.
-
-**Inputs received:**
-- Purchase price: $X.XM (use inputs.landValue from tool result)
-- Target GRV: $X.XM (use revenue.grvInclGST from tool result)
-- Construction cost: $X.XM (use inputs.constructionCost from tool result)
-- LVR: XX% | Interest: X.X% | Timeline: XX months | Selling costs: X%
-- GST: [Margin scheme with $X.XM cost base / Fully taxed]
-
-**Revenue: (Including GST)**
-- Gross Revenue (inc GST): $XX.XM (use revenue.grvInclGST from tool result)
-- GST Payable: $XX.XM (use revenue.gstPayable from tool result)
-- Net Revenue (exc GST): $XX.XM (use revenue.grvExclGST from tool result)
-
-**Total Project Costs: (Excluding GST)**
-- Land acquisition: $XX.XM (use costs.land from tool result)
-- Construction: $XX.XM (use costs.construction from tool result)
-- Selling costs (X%): $XX.XM (use costs.selling from tool result)
-- Finance costs: $XX.XM (use costs.finance from tool result)
-- Holding costs: $XX.XM (use costs.holding from tool result)
-
-Note: Statutory and council fees are GST-free (not subject to GST).
-
-**Profitability:**
-- Gross Profit: $XX.XM (use profitability.grossProfit from tool result)
-- Profit Margin: XX.X% (use profitability.profitMargin from tool result)
-- Status: [VIABLE/MARGINAL/CHALLENGING/NOT VIABLE] (use profitability.viability from tool result)
-
-🚨 DO NOT INVENT NUMBERS. DO NOT USE WHAT YOU REMEMBER. USE ONLY THE TOOL RESULT VALUES.
-
-CRITICAL RULES FOR QUICK FEASO:
-- NEVER assume construction costs - always ask the user
-- NEVER assume LVR, interest rate, or timeline - always ask
-- Accept user corrections immediately without questioning
-- If user provides all inputs at once, parse them and confirm before calculating
-- One question per message maximum
-- Accept variations: "fully funded" = "full fund" = "100% LVR"
-- Accept variations: "18 months" = "18mo" = "18m"
+RULES:
+- NEVER assume construction costs, LVR, interest rate, or timeline - always ask
+- One question per message
+- Accept variations: "fully funded" = 0% LVR, "18 months" = "18mo" = "18"
 - If user says "margin" for GST, that means margin scheme
-- CRITICAL: When user says "I already told you" or similar, review conversation history and find their answer
-- NEVER ask the same question twice - check conversation context first
+- When you have all inputs, call the tool immediately
+- NEVER ask the same question twice
+- Accept user corrections without questioning
+- DO NOT offer feasibility unprompted - only when explicitly asked
 
-TRACKING INPUTS - BEFORE CALLING calculate_quick_feasibility:
-You MUST have ALL of these inputs:
-1. ✓ Land value / Purchase price (acquisition cost)
-2. ✓ GRV (total amount, e.g., "$10M" OR $/sqm rate)
-3. ✓ Construction cost (total, including fees and contingency)
-4. ✓ LVR
-5. ✓ Interest rate
-6. ✓ Timeline in months
-7. ✓ Selling costs percentage
-8. ✓ GST scheme (and cost base if margin scheme)
-
-OPTIONAL INPUTS:
-- Number of units (only if user provides $/sqm rate for GRV)
-- Unit sizes/mix (only if user provides $/sqm rate for GRV)
-- Project type (contextual - doesn't affect calculation, defaults to "new_build")
-
-If ANY required input is missing, ask for it. DO NOT call the tool until you have ALL required inputs.
-When you have all inputs, call the tool immediately - don't summarize or delay.
-
-CALLING THE TOOL - REQUIRED PARAMETERS:
-TWO SCENARIOS:
-A) User provided total GRV (e.g., "$10M total"):
-   - numUnits: 1
-   - saleableArea: 1
-   - grvTotal: User's total amount (e.g., 10000000)
-
-B) User provided $/sqm rate (e.g., "$25k/sqm"):
-   - numUnits: Number from user
-   - saleableArea: Calculate from unit mix (e.g., 50 × 250sqm + 9 × 400sqm = 16,100sqm)
-   - grvTotal: Calculate from $/sqm × area (e.g., $25k/sqm × 16,100 = $402.5M)
-
-ALL OTHER PARAMETERS (same for both scenarios):
-- landValue: Purchase price from user (e.g., 5000000 for $5M) - REQUIRED
-- constructionCost: Total from user (e.g., $171.7M)
-- lvr: As number 0-100 (e.g., 60 for 60%, 100 for fully funded)
-- interestRate: As number (e.g., 6.8 for 6.8%)
-- timelineMonths: As number (e.g., 32)
-- sellingCostsPercent: As number (e.g., 3 for 3%)
-- gstScheme: "margin" or "fully_taxed"
-- gstCostBase: REQUIRED if gstScheme is "margin" (e.g., 12000000 for $12M)
-- propertyAddress: From context
-- projectType: Default to "new_build" if not specified
-
-${contextSummary}
-
-DO NOT offer feasibility unprompted. Only when explicitly asked.`;
+${contextSummary}`;
     
     // Build messages array with conversation history
     const messages = [];
@@ -1665,331 +1468,87 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
         };
       }
       
-  // Handle quick feasibility calculation
+  // Handle quick feasibility calculation - NEW ENGINE
 else if (toolUse.name === 'calculate_quick_feasibility') {
-  console.log('[CLAUDE] ========== QUICK FEASIBILITY CALCULATION START ==========');
-  console.log('[CLAUDE] RAW inputs received from Claude:', JSON.stringify(toolUse.input, null, 2));
+  console.log('[FEASO] ========== QUICK FEASIBILITY START ==========');
+  console.log('[FEASO] Raw inputs from Claude:', JSON.stringify(toolUse.input, null, 2));
 
-  if (sendProgress) sendProgress('🔢 Parsing inputs with server-side parser...');
+  if (sendProgress) sendProgress('🔢 Parsing inputs...');
 
   const input = toolUse.input;
+  const address = input.propertyAddress || conversationContext.lastProperty || '';
+  const mode = input.mode || 'standard';
 
-  // 🔥 NEW ARCHITECTURE: Parse RAW string inputs on the backend
-  // This ensures 100% accuracy by bypassing Claude's number extraction
+  try {
+    let result;
 
-  // Check if we have NEW raw string params or OLD number params (backward compatibility)
-  const hasNewParams = input.purchasePriceRaw !== undefined;
-  const hasOldParams = input.landValue !== undefined || input.grvTotal !== undefined;
-
-  console.log('[CLAUDE] ========== PARAMETER DETECTION ==========');
-  console.log('[CLAUDE] Has NEW params (purchasePriceRaw, grvRaw, etc.):', hasNewParams);
-  console.log('[CLAUDE] Has OLD params (landValue, grvTotal, etc.):', hasOldParams);
-  console.log('[CLAUDE] Parameter names received:', Object.keys(input));
-  console.log('[CLAUDE] First 3 parameter values:');
-  if (hasNewParams) {
-    console.log('  purchasePriceRaw:', input.purchasePriceRaw);
-    console.log('  grvRaw:', input.grvRaw);
-    console.log('  constructionCostRaw:', input.constructionCostRaw);
-  } else if (hasOldParams) {
-    console.log('  landValue:', input.landValue);
-    console.log('  grvTotal:', input.grvTotal);
-    console.log('  constructionCost:', input.constructionCost);
-  }
-  console.log('[CLAUDE] ========================================');
-
-  let parsed;
-
-  if (hasNewParams) {
-    // NEW ARCHITECTURE: Use raw string inputs with parser
-    console.log('[CLAUDE] Using NEW architecture (raw strings + parser)');
-    const rawInputs = {
-      purchasePriceRaw: input.purchasePriceRaw,
-      grvRaw: input.grvRaw,
-      constructionCostRaw: input.constructionCostRaw,
-      lvrRaw: input.lvrRaw,
-      interestRateRaw: input.interestRateRaw,
-      timelineRaw: input.timelineRaw,
-      sellingCostsRaw: input.sellingCostsRaw,
-      gstSchemeRaw: input.gstSchemeRaw,
-      gstCostBaseRaw: input.gstCostBaseRaw,
-      saleableArea: input.saleableArea || 0,
-      numUnits: input.numUnits || 1
-    };
-
-    console.log('[CLAUDE] Calling parseFeasibilityInputs() with raw strings...');
-    parsed = parseFeasibilityInputs(rawInputs);
-  } else if (hasOldParams) {
-    // OLD ARCHITECTURE: Use numbers directly (backward compatibility)
-    console.log('[CLAUDE] Using OLD architecture (direct numbers) - FALLBACK MODE');
-    parsed = {
-      landValue: input.landValue || 0,
-      grvTotal: input.grvTotal || 0,
-      constructionCost: input.constructionCost || 0,
-      lvr: input.lvr || 0,
-      interestRate: input.interestRate || 0,
-      timelineMonths: input.timelineMonths || 0,
-      sellingCostsPercent: input.sellingCostsPercent || 0,
-      gstScheme: input.gstScheme || 'margin',
-      gstCostBase: input.gstCostBase || input.landValue || 0,
-      numUnits: input.numUnits || 1,
-      saleableArea: input.saleableArea || 1,
-      constructionBreakdown: {
-        contingencyPercent: 0
-      }
-    };
-  } else {
-    // ERROR: No valid parameters
-    console.error('[CLAUDE] ERROR: No valid parameters found in tool input!');
-    throw new Error('Missing required feasibility parameters');
-  }
-
-  console.log('[CLAUDE] PARSED VALUES:');
-  console.log('  - landValue:', parsed.landValue);
-  console.log('  - grvTotal:', parsed.grvTotal);
-  console.log('  - constructionCost:', parsed.constructionCost);
-  console.log('  - lvr:', parsed.lvr);
-  console.log('  - interestRate:', parsed.interestRate);
-  console.log('  - timelineMonths:', parsed.timelineMonths);
-  console.log('  - sellingCostsPercent:', parsed.sellingCostsPercent);
-  console.log('  - gstScheme:', parsed.gstScheme);
-  console.log('  - gstCostBase:', parsed.gstCostBase);
-
-  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-
-  // Use parsed values for calculation
-  const numUnits = parsed.numUnits;
-  const saleableArea = parsed.saleableArea;
-  const grvTotal = parsed.grvTotal;
-  const landValue = parsed.landValue;
-  const constructionCost = parsed.constructionCost;
-  const lvr = parsed.lvr;
-  const interestRate = parsed.interestRate;
-  const timelineMonths = parsed.timelineMonths;
-  const sellingCostsPercent = parsed.sellingCostsPercent;
-  const gstScheme = parsed.gstScheme;
-  const gstCostBase = parsed.gstCostBase;
-
-  // Get property context
-  const propertyAddress = input.propertyAddress || conversationContext.lastProperty || '';
-  const siteArea = input.siteArea || conversationContext.lastSiteArea || 0;
-  const densityCode = conversationContext.lastDensity || '';
-  const heightLimit = conversationContext.lastHeight || '';
-
-  // Contingency handling
-  // If user mentioned contingency (e.g., "$30m + 5% contingency"), it's already in the total
-  // If they didn't mention it, assume it's NOT included and add 5%
-  const contingencyPercent = parsed.constructionBreakdown?.contingencyPercent || 0;
-  const contingencyIncluded = contingencyPercent > 0;  // Was contingency explicitly mentioned?
-  const constructionWithContingency = contingencyIncluded
-    ? constructionCost  // Already includes contingency from parser
-    : constructionCost * 1.05;  // Add 5% contingency
-
-  // Convert percentages to decimals
-  const lvrDecimal = lvr / 100;
-  const interestDecimal = interestRate / 100;
-  const sellingDecimal = sellingCostsPercent / 100;
-
-  // Calculate GST
-  let grvExclGST;
-  let gstPayable;
-  if (gstScheme === 'margin' && gstCostBase > 0) {
-    const margin = grvTotal - gstCostBase;
-    gstPayable = margin / 11;
-    grvExclGST = grvTotal - gstPayable;
-  } else if (gstScheme === 'fully_taxed') {
-    gstPayable = grvTotal / 11;
-    grvExclGST = grvTotal / 1.1;
-  } else {
-    // Default to simple /1.1 if no cost base for margin calc
-    gstPayable = grvTotal / 11;
-    grvExclGST = grvTotal / 1.1;
-  }
-
-  // Determine target margin based on GRV
-  const defaultTargetMargin = calculateTargetMargin(grvExclGST);
-  const targetMarginPercent = input.targetMarginPercent || defaultTargetMargin;
-  const targetMarginDecimal = targetMarginPercent / 100;
-
-  // Get default selling costs breakdown
-  const sellingDefaults = getDefaultSellingCosts();
-
-  // Calculate costs
-  const sellingCosts = grvExclGST * sellingDecimal;
-
-  // Calculate holding costs based on land value
-  const landTaxYearly = calculateLandTaxQLD(landValue);
-  const councilRatesAnnual = 5000;
-  const waterRatesAnnual = 1400;
-  const totalHoldingYearly = landTaxYearly + councilRatesAnnual + waterRatesAnnual;
-  const holdingCosts = totalHoldingYearly * (timelineMonths / 12);
-
-  // Finance costs (50% average debt outstanding)
-  const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
-  const avgDebt = totalDebt * 0.5;
-  const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-
-  // Total costs and profit
-  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts + holdingCosts;
-  const grossProfit = grvExclGST - totalCost;
-  const profitMargin = (grossProfit / grvExclGST) * 100;
-
-  // Calculate residual land value at target margin
-  const targetProfit = grvExclGST * targetMarginDecimal;
-  let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
-
-  // Iterate to account for finance costs on land
-  for (let i = 0; i < 5; i++) {
-    const residualDebt = (residualLandValue + constructionWithContingency) * lvrDecimal;
-    const residualAvgDebt = residualDebt * 0.5;
-    const residualFinanceCosts = residualAvgDebt * interestDecimal * (timelineMonths / 12);
-    const residualHoldingCosts = totalHoldingYearly * (timelineMonths / 12);
-    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - residualHoldingCosts - targetProfit;
-  }
-
-  // Determine viability
-  let viability;
-  if (profitMargin >= 25) viability = 'viable';
-  else if (profitMargin >= 20) viability = 'marginal';
-  else if (profitMargin >= 15) viability = 'challenging';
-  else viability = 'not_viable';
-
-  // Split timeline into phases
-  const timeline = splitTimeline(timelineMonths);
-
-  // Parse professional fees, statutory fees, PM fees from construction cost
-  // These are typically provided as part of construction cost breakdown
-  const professionalFees = input.professionalFees || 0;
-  const statutoryFees = input.statutoryFees || 0;
-  const pmFees = input.pmFees || 0;
-  const buildCosts = input.buildCosts || (constructionCost - professionalFees - statutoryFees - pmFees);
-
-  if (sendProgress) sendProgress('✅ Feasibility calculated');
-
-  // BUILD CALCULATOR PRE-FILL OBJECT
-  // This object maps directly to the detailed form field names
-  const calculatorPreFill = {
-    // Property (from property lookup, NOT user input)
-    property: propertyAddress,
-    siteArea: siteArea,  // Actual land parcel size in sqm
-    densityCode: densityCode,
-    heightLimit: heightLimit,
-
-    // Project (from user input)
-    numUnits: numUnits,
-    unitMix: input.unitMix || `${numUnits} units`,
-    saleableArea: saleableArea,  // Total unit floor area - DIFFERENT from siteArea
-
-    // Revenue
-    grvInclGST: Math.round(grvTotal),
-
-    // Acquisition
-    landValue: Math.round(landValue),
-    gstScheme: gstScheme,
-    gstCostBase: Math.round(gstCostBase),
-
-    // Construction (user provided or defaults)
-    buildCosts: Math.round(buildCosts),
-    contingencyPercent: contingencyPercent,
-    professionalFees: Math.round(professionalFees),
-    statutoryFees: Math.round(statutoryFees),
-    pmFees: Math.round(pmFees),
-
-    // Holding (apply defaults based on land value)
-    landTaxYearly: Math.round(landTaxYearly),
-    councilRatesAnnual: councilRatesAnnual,
-    waterRatesAnnual: waterRatesAnnual,
-
-    // Selling (use defaults or user-provided)
-    agentFeesPercent: sellingDefaults.agentFeesPercent,
-    marketingPercent: sellingDefaults.marketingPercent,
-    legalSellingPercent: sellingDefaults.legalSellingPercent,
-
-    // Finance
-    lvr: lvr,
-    interestRate: interestRate,
-
-    // Timeline
-    totalMonths: timeline.totalMonths,
-    leadInMonths: timeline.leadInMonths,
-    constructionMonths: timeline.constructionMonths,
-    sellingMonths: timeline.sellingMonths,
-
-    // Target
-    targetMargin: targetMarginPercent
-  };
-
-  toolResult = {
-    success: true,
-    feasibilityMode: 'results',
-
-    // NEW: Include calculatorPreFill for form/PDF
-    calculatorPreFill: calculatorPreFill,
-
-    inputs: {
-      address: propertyAddress,
-      projectType: input.projectType,
-      numUnits: numUnits,
-      unitMix: input.unitMix,
-      saleableArea: saleableArea,
-      landValue: landValue,
-      constructionCost: constructionWithContingency,
-      contingencyIncluded: contingencyIncluded,
-      lvr: lvr,
-      interestRate: interestRate,
-      timelineMonths: timelineMonths,
-      sellingCostsPercent: sellingCostsPercent,
-      gstScheme: gstScheme
-    },
-
-    revenue: {
-      grvInclGST: Math.round(grvTotal),
-      grvExclGST: Math.round(grvExclGST),
-      gstPayable: Math.round(gstPayable),
-      avgPricePerUnit: Math.round(grvTotal / numUnits)
-    },
-
-    costs: {
-      land: Math.round(landValue),
-      construction: Math.round(constructionWithContingency),
-      selling: Math.round(sellingCosts),
-      finance: Math.round(financeCosts),
-      holding: Math.round(holdingCosts),
-      total: Math.round(totalCost)
-    },
-
-    profitability: {
-      grossProfit: Math.round(grossProfit),
-      profitMargin: Math.round(profitMargin * 10) / 10,
-      targetMargin: targetMarginPercent,
-      meetsTarget: profitMargin >= targetMarginPercent,
-      viability: viability
-    },
-
-    residual: {
-      residualLandValue: Math.round(residualLandValue),
-      vsActualLand: landValue > 0 ? Math.round(residualLandValue - landValue) : null
-    },
-
-    assumptions: {
-      contingency: contingencyIncluded ? 'Included in construction' : 'Added 5%',
-      financeDrawProfile: '50% average outstanding',
-      landTax: `$${Math.round(landTaxYearly).toLocaleString()}/year`,
-      councilRates: `$${councilRatesAnnual.toLocaleString()}/year`,
-      waterRates: `$${waterRatesAnnual.toLocaleString()}/year`,
-      targetMarginBasis: grvExclGST < 15000000 ? 'GRV under $15M → 15%' : 'GRV $15M+ → 20%'
+    if (mode === 'residual') {
+      // Residual land value mode - user wants to know max land price
+      if (sendProgress) sendProgress('📊 Calculating residual land value...');
+      result = runResidualAnalysis(input, address);
+    } else {
+      // Standard feasibility
+      if (sendProgress) sendProgress('📊 Crunching the numbers...');
+      result = runQuickFeasibility(input, address);
     }
-  };
 
-  // CRITICAL: Log what the tool actually calculated
-  console.log('[CLAUDE] ========== TOOL CALCULATION RESULTS ==========');
-  console.log('[CLAUDE] Tool returned:');
-  console.log('  - revenue.grvInclGST:', toolResult.revenue.grvInclGST);
-  console.log('  - costs.land:', toolResult.costs.land);
-  console.log('  - costs.construction:', toolResult.costs.construction);
-  console.log('  - profitability.grossProfit:', toolResult.profitability.grossProfit);
-  console.log('[CLAUDE] ========== END TOOL RESULTS ==========');
+    if (sendProgress) sendProgress('✅ Feasibility calculated');
+
+    console.log('[FEASO] ========== RESULTS ==========');
+    console.log('[FEASO] Profit:', result.calculationData.profitability.grossProfit);
+    console.log('[FEASO] Margin:', result.calculationData.profitability.profitMargin + '%');
+    console.log('[FEASO] Viability:', result.calculationData.profitability.viabilityLabel);
+    console.log('[FEASO] ========== END ==========');
+
+    // Return the pre-formatted response + structured data
+    toolResult = {
+      success: true,
+      feasibilityMode: 'results',
+      formattedResponse: result.formattedResponse,
+      calculationData: result.calculationData,
+      parsedInputs: result.parsedInputs
+    };
+  } catch (calcError) {
+    console.error('[FEASO] Calculation error:', calcError.message);
+    console.error('[FEASO] Stack:', calcError.stack);
+    toolResult = {
+      success: false,
+      error: calcError.message,
+      formattedResponse: 'I couldn\'t calculate the feasibility with those inputs. Could you double-check the numbers and try again?'
+    };
+  }
 }
-      // Send the tool result back to Claude
+      // ============================================================
+      // FEASIBILITY: Return pre-formatted response directly
+      // DO NOT send back to Claude - this eliminates hallucination
+      // ============================================================
+      if (toolUse.name === 'calculate_quick_feasibility' && toolResult?.formattedResponse) {
+        console.log('[CLAUDE] Returning pre-formatted feasibility response (bypassing Claude)');
+
+        // Parse button options from the formatted response
+        const buttonOptions = parseButtonOptions(toolResult.formattedResponse);
+        const questionContext = buttonOptions ? detectQuestionContext(toolResult.formattedResponse, buttonOptions) : null;
+
+        return {
+          answer: toolResult.formattedResponse,
+          propertyData: null,
+          feasibilityData: {
+            success: toolResult.success,
+            feasibilityMode: 'results',
+            calculationData: toolResult.calculationData,
+            parsedInputs: toolResult.parsedInputs
+          },
+          buttonOptions: buttonOptions,
+          questionContext: questionContext,
+          usedTool: true,
+          toolName: toolUse.name,
+          toolQuery: toolUse.input.propertyAddress
+        };
+      }
+
+      // ============================================================
+      // ALL OTHER TOOLS: Send result back to Claude for interpretation
+      // ============================================================
       const finalResponse = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 800,
@@ -2016,7 +1575,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
 
       const textContent = finalResponse.content.find(c => c.type === 'text');
 
-      const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
+      const isFeasibility = toolUse.name === 'start_feasibility';
       const isPropertyAnalysis = toolUse.name === 'get_property_info';
 
       // For property analysis, preserve professional structure; for other responses, apply casual formatting
