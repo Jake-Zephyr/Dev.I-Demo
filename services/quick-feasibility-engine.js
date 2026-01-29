@@ -629,24 +629,243 @@ This means if you can acquire the site for less than ${fmtCurrency(residual.resi
 
 
 // ============================================================
-// SECTION 5: MAIN ENTRY POINT
+// SECTION 5: CONVERSATION HISTORY EXTRACTOR
+// ============================================================
+
+/**
+ * Extract feasibility inputs directly from conversation history.
+ *
+ * This is the NUCLEAR OPTION - we don't trust Claude to pass values correctly.
+ * Instead, we scan the actual conversation to find what the user typed.
+ *
+ * The conversation follows this pattern:
+ *   Assistant: "What's the purchase price?"
+ *   User: "$10M"
+ *   Assistant: "What's the GRV?"
+ *   User: "$45M"
+ *   ...etc
+ *
+ * We match the assistant's question to determine what the user's next message means.
+ */
+export function extractInputsFromConversation(conversationHistory) {
+  if (!conversationHistory || conversationHistory.length === 0) {
+    return null;
+  }
+
+  const extracted = {};
+
+  // Walk through conversation in pairs: look at assistant message, then user response
+  for (let i = 0; i < conversationHistory.length - 1; i++) {
+    const msg = conversationHistory[i];
+    const nextMsg = conversationHistory[i + 1];
+
+    // We only care about assistant question → user answer pairs
+    if (msg.role !== 'assistant' || nextMsg.role !== 'user') continue;
+
+    const question = String(msg.content || '').toLowerCase();
+    const answer = String(nextMsg.content || '').trim();
+
+    // Skip empty answers
+    if (!answer) continue;
+
+    // PURCHASE PRICE / LAND VALUE
+    if (!extracted.purchasePriceRaw && (
+      question.includes('purchase price') ||
+      question.includes('acquisition cost') ||
+      question.includes('site acquisition') ||
+      question.includes('buying') ||
+      question.includes('land value') ||
+      question.includes('land cost')
+    )) {
+      extracted.purchasePriceRaw = answer;
+      console.log('[CONV-EXTRACT] Purchase price:', answer);
+    }
+
+    // GRV / GROSS REVENUE
+    else if (!extracted.grvRaw && (
+      question.includes('gross revenue') ||
+      question.includes('grv') ||
+      question.includes('gross realisation') ||
+      question.includes('target revenue') ||
+      question.includes('total revenue')
+    )) {
+      extracted.grvRaw = answer;
+      console.log('[CONV-EXTRACT] GRV:', answer);
+    }
+
+    // CONSTRUCTION COST
+    else if (!extracted.constructionCostRaw && (
+      question.includes('construction cost') ||
+      question.includes('construction budget') ||
+      question.includes('build cost') ||
+      question.includes('total construction') ||
+      (question.includes('construction') && question.includes('cost'))
+    )) {
+      extracted.constructionCostRaw = answer;
+      console.log('[CONV-EXTRACT] Construction cost:', answer);
+    }
+
+    // LVR
+    else if (!extracted.lvrRaw && (
+      question.includes('lvr') ||
+      question.includes('loan to value') ||
+      question.includes('loan-to-value')
+    )) {
+      extracted.lvrRaw = answer;
+      console.log('[CONV-EXTRACT] LVR:', answer);
+    }
+
+    // INTEREST RATE
+    // Note: User might say "Custom" to the button question, then give the rate next
+    // Also handle "What's your custom interest rate?" follow-up
+    else if (!extracted.interestRateRaw && (
+      question.includes('interest rate') ||
+      question.includes('custom interest') ||
+      question.includes('custom rate') ||
+      (question.includes('interest') && question.includes('rate'))
+    )) {
+      // If answer is "Custom" or "custom", the actual rate is in the NEXT user message
+      // Pattern: assistant asks → user says "Custom" → assistant asks "What rate?" → user gives "8.5"
+      if (answer.toLowerCase() === 'custom') {
+        // Look for next user message after the follow-up assistant question
+        // i = assistant question, i+1 = user "Custom", i+2 = assistant follow-up, i+3 = user actual answer
+        if (i + 3 < conversationHistory.length && conversationHistory[i + 3].role === 'user') {
+          extracted.interestRateRaw = String(conversationHistory[i + 3].content).trim();
+          console.log('[CONV-EXTRACT] Interest rate (from custom follow-up):', extracted.interestRateRaw);
+        } else if (i + 2 < conversationHistory.length && conversationHistory[i + 2].role === 'user') {
+          // Fallback: maybe no assistant follow-up, user just typed the rate directly
+          extracted.interestRateRaw = String(conversationHistory[i + 2].content).trim();
+          console.log('[CONV-EXTRACT] Interest rate (from direct follow-up):', extracted.interestRateRaw);
+        } else {
+          // Last resort: don't set - let Claude's value be used as fallback
+          console.log('[CONV-EXTRACT] Interest rate: Custom selected but no follow-up found, will use Claude fallback');
+        }
+      } else {
+        extracted.interestRateRaw = answer;
+        console.log('[CONV-EXTRACT] Interest rate:', answer);
+      }
+    }
+
+    // TIMELINE
+    else if (!extracted.timelineRaw && (
+      question.includes('timeline') ||
+      question.includes('project duration') ||
+      question.includes('how many months') ||
+      question.includes('in months')
+    )) {
+      extracted.timelineRaw = answer;
+      console.log('[CONV-EXTRACT] Timeline:', answer);
+    }
+
+    // SELLING COSTS
+    else if (!extracted.sellingCostsRaw && (
+      question.includes('selling cost') ||
+      question.includes('agent') ||
+      question.includes('marketing') ||
+      (question.includes('selling') && (question.includes('%') || question.includes('cost')))
+    )) {
+      if (answer.toLowerCase() === 'custom') {
+        // Same pattern: i+3 = user answer after follow-up question
+        if (i + 3 < conversationHistory.length && conversationHistory[i + 3].role === 'user') {
+          extracted.sellingCostsRaw = String(conversationHistory[i + 3].content).trim();
+          console.log('[CONV-EXTRACT] Selling costs (from custom follow-up):', extracted.sellingCostsRaw);
+        } else if (i + 2 < conversationHistory.length && conversationHistory[i + 2].role === 'user') {
+          extracted.sellingCostsRaw = String(conversationHistory[i + 2].content).trim();
+          console.log('[CONV-EXTRACT] Selling costs (from direct follow-up):', extracted.sellingCostsRaw);
+        }
+      } else {
+        extracted.sellingCostsRaw = answer;
+        console.log('[CONV-EXTRACT] Selling costs:', answer);
+      }
+    }
+
+    // GST SCHEME
+    else if (!extracted.gstSchemeRaw && (
+      question.includes('gst') ||
+      question.includes('goods and services tax')
+    )) {
+      extracted.gstSchemeRaw = answer;
+      console.log('[CONV-EXTRACT] GST scheme:', answer);
+    }
+
+    // GST COST BASE (comes after GST scheme question)
+    else if (!extracted.gstCostBaseRaw && extracted.gstSchemeRaw && (
+      question.includes('cost base') ||
+      question.includes('margin scheme')
+    )) {
+      extracted.gstCostBaseRaw = answer;
+      console.log('[CONV-EXTRACT] GST cost base:', answer);
+    }
+  }
+
+  // Count how many inputs we found
+  const fields = ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw',
+    'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw'];
+  const foundCount = fields.filter(f => extracted[f]).length;
+
+  console.log(`[CONV-EXTRACT] Found ${foundCount}/${fields.length} inputs from conversation history`);
+
+  if (foundCount === 0) return null;
+
+  return extracted;
+}
+
+
+// ============================================================
+// SECTION 6: MAIN ENTRY POINT
 // ============================================================
 
 /**
  * Complete quick feasibility pipeline
- * 1. Parse raw inputs
- * 2. Calculate everything
- * 3. Format response
+ * 1. Extract inputs from conversation history (GROUND TRUTH)
+ * 2. Merge with Claude's passed inputs (fallback)
+ * 3. Parse raw strings to numbers
+ * 4. Calculate everything
+ * 5. Format response
  *
  * Returns: { formattedResponse, calculationData, parsedInputs }
  */
-export function runQuickFeasibility(rawInputs, address) {
-  // Step 1: Parse
-  const parsed = parseAllInputs(rawInputs);
+export function runQuickFeasibility(rawInputs, address, conversationHistory) {
+  // Step 1: Try to extract inputs from conversation history (most reliable)
+  const conversationInputs = extractInputsFromConversation(conversationHistory);
+
+  // Step 2: Merge - conversation history wins over Claude's passed values
+  let finalInputs;
+  if (conversationInputs) {
+    console.log('[FEASO-ENGINE] Using conversation-extracted inputs (overriding Claude)');
+    finalInputs = {
+      purchasePriceRaw: conversationInputs.purchasePriceRaw || rawInputs.purchasePriceRaw,
+      grvRaw: conversationInputs.grvRaw || rawInputs.grvRaw,
+      constructionCostRaw: conversationInputs.constructionCostRaw || rawInputs.constructionCostRaw,
+      lvrRaw: conversationInputs.lvrRaw || rawInputs.lvrRaw,
+      interestRateRaw: conversationInputs.interestRateRaw || rawInputs.interestRateRaw,
+      timelineRaw: conversationInputs.timelineRaw || rawInputs.timelineRaw,
+      sellingCostsRaw: conversationInputs.sellingCostsRaw || rawInputs.sellingCostsRaw,
+      gstSchemeRaw: conversationInputs.gstSchemeRaw || rawInputs.gstSchemeRaw,
+      gstCostBaseRaw: conversationInputs.gstCostBaseRaw || rawInputs.gstCostBaseRaw
+    };
+
+    // Log comparison: what Claude passed vs what conversation actually had
+    console.log('[FEASO-ENGINE] === INPUT COMPARISON ===');
+    const fields = ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw'];
+    for (const f of fields) {
+      const claudeVal = rawInputs[f] || '(not provided)';
+      const convVal = conversationInputs[f] || '(not found)';
+      const match = claudeVal === convVal;
+      console.log(`  ${f}: Claude="${claudeVal}" | Conversation="${convVal}" | ${match ? 'MATCH' : 'MISMATCH - using conversation'}`);
+    }
+    console.log('[FEASO-ENGINE] === END COMPARISON ===');
+  } else {
+    console.log('[FEASO-ENGINE] No conversation history available, using Claude inputs only');
+    finalInputs = rawInputs;
+  }
+
+  // Step 3: Parse
+  const parsed = parseAllInputs(finalInputs);
 
   console.log('[FEASO-ENGINE] Parsed inputs:', JSON.stringify(parsed, null, 2));
 
-  // Step 2: Calculate
+  // Step 4: Calculate
   const calc = calculateFeasibility(parsed);
 
   console.log('[FEASO-ENGINE] Calculation results:');
@@ -657,7 +876,7 @@ export function runQuickFeasibility(rawInputs, address) {
   console.log('  Viability:', calc.profitability.viabilityLabel);
   console.log('  Residual Land:', calc.residual.residualLandValue);
 
-  // Step 3: Format
+  // Step 5: Format
   const formattedResponse = formatFeasibilityResponse(calc, address);
 
   // Also return structured data for PDF/calculator
@@ -672,9 +891,16 @@ export function runQuickFeasibility(rawInputs, address) {
  * Residual land value pipeline
  * Same as above but formats for "I don't know the land price" scenario
  */
-export function runResidualAnalysis(rawInputs, address, targetMarginOverride) {
+export function runResidualAnalysis(rawInputs, address, targetMarginOverride, conversationHistory) {
   // For residual mode, set land to 0 for initial calc, then use residual result
-  const parsed = parseAllInputs({ ...rawInputs, purchasePriceRaw: '0' });
+  const conversationInputs = extractInputsFromConversation(conversationHistory);
+  const finalInputs = conversationInputs ? {
+    ...rawInputs,
+    ...conversationInputs,
+    purchasePriceRaw: '0'
+  } : { ...rawInputs, purchasePriceRaw: '0' };
+
+  const parsed = parseAllInputs(finalInputs);
   const calc = calculateFeasibility(parsed);
   const formattedResponse = formatResidualResponse(calc, address, targetMarginOverride);
 

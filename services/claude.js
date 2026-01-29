@@ -1127,7 +1127,7 @@ ${contextSummary}`;
     console.log('[CLAUDE] Sending request to Anthropic API...');
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 800,
+      max_tokens: 2000,
       system: systemPrompt,
       tools,
       messages
@@ -1482,14 +1482,20 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   try {
     let result;
 
+    // Build full conversation history (including current query) for extraction
+    const fullHistory = [
+      ...(conversationHistory || []),
+      { role: 'user', content: userQuery }
+    ];
+
     if (mode === 'residual') {
       // Residual land value mode - user wants to know max land price
       if (sendProgress) sendProgress('📊 Calculating residual land value...');
-      result = runResidualAnalysis(input, address);
+      result = runResidualAnalysis(input, address, null, fullHistory);
     } else {
-      // Standard feasibility
+      // Standard feasibility - pass conversation history so backend can extract REAL values
       if (sendProgress) sendProgress('📊 Crunching the numbers...');
-      result = runQuickFeasibility(input, address);
+      result = runQuickFeasibility(input, address, fullHistory);
     }
 
     if (sendProgress) sendProgress('✅ Feasibility calculated');
