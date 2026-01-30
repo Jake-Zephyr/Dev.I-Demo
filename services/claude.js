@@ -1476,7 +1476,9 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   if (sendProgress) sendProgress('🔢 Parsing inputs...');
 
   const input = toolUse.input;
-  const address = input.propertyAddress || conversationContext.lastProperty || '';
+  // PRIORITY: Use current session's property (from get_property_info) over Claude's passed address
+  // Claude may hallucinate addresses from previous conversations
+  const address = conversationContext.lastProperty || input.propertyAddress || '';
   const mode = input.mode || 'standard';
 
   try {
@@ -1554,57 +1556,178 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
 
       // ============================================================
       // ALL OTHER TOOLS: Send result back to Claude for interpretation
+      // Handle follow-up tool calls in a loop (e.g. property lookup → start_feasibility → text)
       // ============================================================
-      const finalResponse = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 800,
-        system: systemPrompt,
-        tools,
-        messages: [
-          ...messages,
-          {
-            role: 'assistant',
-            content: response.content
-          },
-          {
-            role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: JSON.stringify(toolResult, null, 2)
-            }]
+      let loopMessages = [
+        ...messages,
+        { role: 'assistant', content: response.content },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(toolResult, null, 2) }] }
+      ];
+
+      let allTextParts = [];
+      let latestPropertyData = toolUse.name === 'get_property_info' ? toolResult : null;
+      let latestFeasibilityData = null;
+      let latestDaData = toolUse.name === 'search_development_applications' ? toolResult : null;
+      let latestToolName = toolUse.name;
+      const MAX_TOOL_LOOPS = 4;
+
+      for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
+        console.log(`[CLAUDE] Tool loop ${loop + 1}/${MAX_TOOL_LOOPS}`);
+
+        const loopResponse = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          system: systemPrompt,
+          tools,
+          messages: loopMessages
+        });
+
+        console.log('[CLAUDE] Loop response types:', loopResponse.content.map(c => c.type));
+        console.log('[CLAUDE] Loop stop_reason:', loopResponse.stop_reason);
+
+        // Collect text from this response
+        const textBlock = loopResponse.content.find(c => c.type === 'text');
+        if (textBlock?.text?.trim()) {
+          allTextParts.push(textBlock.text.trim());
+        }
+
+        // Check for follow-up tool call
+        const nextTool = loopResponse.content.find(c => c.type === 'tool_use');
+
+        if (!nextTool) {
+          // No more tools — we have our final text response
+          console.log('[CLAUDE] No more tool calls, returning text');
+          break;
+        }
+
+        console.log(`[CLAUDE] Follow-up tool: ${nextTool.name}`);
+
+        let nextResult;
+
+        // Handle calculate_quick_feasibility — BYPASS (return immediately)
+        if (nextTool.name === 'calculate_quick_feasibility') {
+          console.log('[CLAUDE] Follow-up: calculate_quick_feasibility — bypassing');
+          const fInput = nextTool.input;
+          const fAddress = conversationContext.lastProperty || fInput.propertyAddress || '';
+          const fMode = fInput.mode || 'standard';
+
+          try {
+            const fullHistory = [...(conversationHistory || []), { role: 'user', content: userQuery }];
+            let fResult;
+            if (fMode === 'residual') {
+              fResult = runResidualAnalysis(fInput, fAddress, null, fullHistory);
+            } else {
+              fResult = runQuickFeasibility(fInput, fAddress, fullHistory);
+            }
+
+            // Combine earlier text with feasibility response
+            const preText = allTextParts.length > 0 ? allTextParts.join('\n\n') + '\n\n' : '';
+            const fButtonOptions = parseButtonOptions(fResult.formattedResponse);
+            const fQuestionContext = fButtonOptions ? detectQuestionContext(fResult.formattedResponse, fButtonOptions) : null;
+
+            return {
+              answer: preText + fResult.formattedResponse,
+              propertyData: latestPropertyData,
+              feasibilityData: {
+                success: true,
+                feasibilityMode: 'results',
+                calculationData: fResult.calculationData,
+                parsedInputs: fResult.parsedInputs
+              },
+              buttonOptions: fButtonOptions,
+              questionContext: fQuestionContext,
+              usedTool: true,
+              toolName: nextTool.name,
+              toolQuery: fInput.propertyAddress
+            };
+          } catch (calcError) {
+            console.error('[CLAUDE] Follow-up feasibility error:', calcError.message);
+            nextResult = { success: false, error: calcError.message };
           }
-        ]
-      });
+        }
 
-      console.log('[CLAUDE] Final advisory generated');
+        // Handle ask_clarification — return immediately
+        else if (nextTool.name === 'ask_clarification') {
+          let clarMsg = nextTool.input.originalQuestion;
+          if (nextTool.input.clarificationType === 'choice_needed') {
+            const opts = nextTool.input.options?.map((o, i) => `${i + 1}. ${o}`).join('\n') || '';
+            clarMsg = `${nextTool.input.originalQuestion}\n\nPlease choose:\n${opts}`;
+          }
+          const preText = allTextParts.length > 0 ? allTextParts.join('\n\n') + '\n\n' : '';
+          return {
+            answer: preText + clarMsg,
+            propertyData: latestPropertyData,
+            usedTool: 'ask_clarification',
+            needsClarification: true
+          };
+        }
 
-      const textContent = finalResponse.content.find(c => c.type === 'text');
+        // Handle start_feasibility
+        else if (nextTool.name === 'start_feasibility') {
+          const fesoMode = nextTool.input.mode || 'selection';
+          nextResult = {
+            success: true,
+            feasibilityMode: fesoMode,
+            propertyAddress: nextTool.input.propertyAddress,
+            message: fesoMode === 'detailed'
+              ? 'Opening detailed feasibility calculator'
+              : fesoMode === 'quick'
+              ? 'Starting quick feasibility analysis'
+              : 'Choose quick or detailed analysis'
+          };
+          latestFeasibilityData = nextResult;
+          latestToolName = 'start_feasibility';
+        }
 
-      const isFeasibility = toolUse.name === 'start_feasibility';
-      const isPropertyAnalysis = toolUse.name === 'get_property_info';
+        // Handle get_property_info
+        else if (nextTool.name === 'get_property_info') {
+          try {
+            if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
+            const propData = await scrapeProperty(nextTool.input.query, sendProgress);
+            nextResult = propData;
+            latestPropertyData = propData;
+            latestToolName = 'get_property_info';
+          } catch (e) {
+            nextResult = { error: e.message };
+          }
+        }
 
-      // For property analysis, preserve professional structure; for other responses, apply casual formatting
+        // Any other tool — provide simple result
+        else {
+          nextResult = { success: true, message: 'Processed' };
+          latestToolName = nextTool.name;
+        }
+
+        // Add exchange to messages for next iteration
+        loopMessages.push(
+          { role: 'assistant', content: loopResponse.content },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: nextTool.id, content: JSON.stringify(nextResult, null, 2) }] }
+        );
+      }
+
+      // Build final response from collected text
+      const combinedText = allTextParts.join('\n\n');
+      const isPropertyAnalysis = latestToolName === 'get_property_info';
+      const isFeasibility = latestToolName === 'start_feasibility';
+
       let formattedAnswer = isPropertyAnalysis
-        ? stripMarkdown(textContent?.text)
-        : formatIntoParagraphs(stripMarkdown(textContent?.text));
+        ? stripMarkdown(combinedText)
+        : formatIntoParagraphs(stripMarkdown(combinedText));
 
-      // Fix inline bullet points by adding newlines between them (only for lists, not explanations)
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
-      // Parse button options from the response
       const buttonOptions = parseButtonOptions(formattedAnswer);
       const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
 
       return {
         answer: formattedAnswer || 'Unable to generate response',
-        propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
-        daData: toolUse.name === 'search_development_applications' ? toolResult : null,
-        feasibilityData: isFeasibility ? toolResult : null,
+        propertyData: latestPropertyData,
+        daData: latestDaData,
+        feasibilityData: latestFeasibilityData,
         buttonOptions: buttonOptions,
         questionContext: questionContext,
         usedTool: true,
-        toolName: toolUse.name,
+        toolName: latestToolName,
         toolQuery: toolUse.input.query || toolUse.input.address || toolUse.input.propertyAddress
       };
     } else {
