@@ -688,6 +688,14 @@ PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 - Only hard limits are things like flood levels, bushfire safety, airport height restrictions - these genuinely can't be varied
 - Be encouraging but honest about the extra process involved
 
+OVERLAY INTERPRETATION (CRITICAL):
+- "Acid sulfate soils - Land at or below 5m AHD" and "Acid sulfate soils - Land at or below 20m AHD" are ACID SULFATE SOIL overlays, NOT flood zones
+- AHD = Australian Height Datum (elevation measurement system)
+- Acid sulfate soils overlays concern soil chemistry and require management when disturbed during excavation
+- Flood overlays are separate and shown as "Flood assessment required"
+- DO NOT confuse these - they are completely different planning concerns with different requirements
+- When explaining acid sulfate soil overlays, mention they relate to soil management during excavation, not flood risk
+
 WRITING STYLE FOR SITE ANALYSIS:
 - Professional, factual, and structured responses
 - ALWAYS include the lot/plan reference in the first sentence for verification
@@ -779,7 +787,7 @@ Planning Overlays for [address] (Lot [lotplan]):
 • [Overlay 4]\n
 
 WRONG - DO NOT DO THIS (all run together):
-Planning Overlays: • Land at or below 5m AHD • Land at or below 20m AHD • Airport environs
+Planning Overlays: • Acid sulfate soils - Land at or below 5m AHD • Acid sulfate soils - Land at or below 20m AHD • Airport environs
 
 Use ENTER/RETURN key after each bullet. Think of it like pressing RETURN on a keyboard after typing each line.
 
