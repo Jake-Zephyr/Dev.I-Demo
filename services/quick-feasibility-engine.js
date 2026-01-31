@@ -668,49 +668,63 @@ export function extractInputsFromConversation(conversationHistory) {
     // Skip empty answers
     if (!answer) continue;
 
+    // GST COST BASE — check BEFORE purchase price to avoid false match
+    // "What is the project cost base for Margin Scheme purposes? [Same as acquisition cost]"
+    // contains "acquisition cost" which would falsely match the purchase price pattern
+    if (extracted.gstSchemeRaw && (
+      question.includes('cost base') ||
+      (question.includes('margin scheme') && question.includes('purpose'))
+    )) {
+      extracted.gstCostBaseRaw = answer;
+      console.log('[CONV-EXTRACT] GST cost base:', answer);
+      continue; // Skip to next pair — don't let this match anything else
+    }
+
     // PURCHASE PRICE / LAND VALUE
-    if (!extracted.purchasePriceRaw && (
+    // NOTE: No !extracted.X guard — if question is re-asked, LAST answer wins
+    // Exclude questions about cost base or margin scheme (they contain "acquisition cost" in buttons)
+    if ((
       question.includes('purchase price') ||
       question.includes('acquisition cost') ||
       question.includes('site acquisition') ||
       question.includes('buying') ||
       question.includes('land value') ||
       question.includes('land cost')
-    )) {
+    ) && !question.includes('cost base') && !question.includes('margin scheme')) {
       extracted.purchasePriceRaw = answer;
       console.log('[CONV-EXTRACT] Purchase price:', answer);
     }
 
     // GRV / GROSS REVENUE
-    else if (!extracted.grvRaw && (
+    else if (
       question.includes('gross revenue') ||
       question.includes('grv') ||
       question.includes('gross realisation') ||
       question.includes('target revenue') ||
       question.includes('total revenue')
-    )) {
+    ) {
       extracted.grvRaw = answer;
       console.log('[CONV-EXTRACT] GRV:', answer);
     }
 
     // CONSTRUCTION COST
-    else if (!extracted.constructionCostRaw && (
+    else if (
       question.includes('construction cost') ||
       question.includes('construction budget') ||
       question.includes('build cost') ||
       question.includes('total construction') ||
       (question.includes('construction') && question.includes('cost'))
-    )) {
+    ) {
       extracted.constructionCostRaw = answer;
       console.log('[CONV-EXTRACT] Construction cost:', answer);
     }
 
     // LVR
-    else if (!extracted.lvrRaw && (
+    else if (
       question.includes('lvr') ||
       question.includes('loan to value') ||
       question.includes('loan-to-value')
-    )) {
+    ) {
       extracted.lvrRaw = answer;
       console.log('[CONV-EXTRACT] LVR:', answer);
     }
@@ -718,12 +732,12 @@ export function extractInputsFromConversation(conversationHistory) {
     // INTEREST RATE
     // Note: User might say "Custom" to the button question, then give the rate next
     // Also handle "What's your custom interest rate?" follow-up
-    else if (!extracted.interestRateRaw && (
+    else if (
       question.includes('interest rate') ||
       question.includes('custom interest') ||
       question.includes('custom rate') ||
       (question.includes('interest') && question.includes('rate'))
-    )) {
+    ) {
       // If answer is "Custom" or "custom", the actual rate is in the NEXT user message
       // Pattern: assistant asks → user says "Custom" → assistant asks "What rate?" → user gives "8.5"
       if (answer.toLowerCase() === 'custom') {
@@ -746,24 +760,24 @@ export function extractInputsFromConversation(conversationHistory) {
       }
     }
 
-    // TIMELINE
-    else if (!extracted.timelineRaw && (
+    // TIMELINE — no guard, last answer wins (handles re-asked questions)
+    else if (
       question.includes('timeline') ||
       question.includes('project duration') ||
       question.includes('how many months') ||
       question.includes('in months')
-    )) {
+    ) {
       extracted.timelineRaw = answer;
       console.log('[CONV-EXTRACT] Timeline:', answer);
     }
 
     // SELLING COSTS
-    else if (!extracted.sellingCostsRaw && (
+    else if (
       question.includes('selling cost') ||
       question.includes('agent') ||
       question.includes('marketing') ||
       (question.includes('selling') && (question.includes('%') || question.includes('cost')))
-    )) {
+    ) {
       if (answer.toLowerCase() === 'custom') {
         // Same pattern: i+3 = user answer after follow-up question
         if (i + 3 < conversationHistory.length && conversationHistory[i + 3].role === 'user') {
@@ -780,21 +794,94 @@ export function extractInputsFromConversation(conversationHistory) {
     }
 
     // GST SCHEME
-    else if (!extracted.gstSchemeRaw && (
+    else if (
       question.includes('gst') ||
       question.includes('goods and services tax')
-    )) {
+    ) {
       extracted.gstSchemeRaw = answer;
       console.log('[CONV-EXTRACT] GST scheme:', answer);
     }
 
-    // GST COST BASE (comes after GST scheme question)
-    else if (!extracted.gstCostBaseRaw && extracted.gstSchemeRaw && (
-      question.includes('cost base') ||
-      question.includes('margin scheme')
-    )) {
-      extracted.gstCostBaseRaw = answer;
-      console.log('[CONV-EXTRACT] GST cost base:', answer);
+    // GST COST BASE is handled at the top of the loop (before purchase price)
+    // to avoid false matches with "acquisition cost" in button text
+  }
+
+  // ============================================================
+  // PHASE 2: Scan ALL user messages for inline values
+  // Catches cases like: "buying 70 nobby parade for $2m... GR 10m... cost $3.5m to build"
+  // This handles when user provides values in their first message, not in Q&A format
+  // ============================================================
+  for (const msg of conversationHistory) {
+    if (msg.role !== 'user') continue;
+    const text = String(msg.content || '');
+    if (!text || text.length < 10) continue; // Skip short answers like "80%" or "yes"
+    const lower = text.toLowerCase();
+
+    // Only scan messages that look like they contain feasibility request + values
+    // Skip messages that are just answering a question (short, single value like "$10M", "80%", "18 months")
+    const hasMultipleValues = (lower.match(/\$[\d.,]+[mkb]?/gi) || []).length >= 2 ||
+      (lower.includes('buy') && lower.match(/\$/)) ||
+      (lower.includes('feaso') && lower.match(/\$/)) ||
+      (lower.includes('feasibility') && lower.match(/\$/));
+    if (!hasMultipleValues) continue;
+
+    console.log('[CONV-EXTRACT] Scanning user message for inline values:', text.substring(0, 80) + '...');
+
+    // PURCHASE PRICE: "buying X for $2m", "purchase for $2m", "acquiring for $2m", "$2m to buy"
+    if (!extracted.purchasePriceRaw) {
+      const purchasePatterns = [
+        /(?:buying|purchase|acquiring|buy)\s+(?:[\w\s]+?\s+)?for\s+(\$[\d.,]+\s*[mkb](?:illion|il)?)/i,
+        /(?:buying|purchase|acquiring|buy)\s+(?:[\w\s]+?\s+)?(?:at|for)\s+(\$[\d.,]+(?:,\d{3})*)/i,
+        /(\$[\d.,]+\s*[mkb](?:illion|il)?)\s+(?:to\s+)?(?:buy|purchase|acqui)/i,
+        /(?:land|site|property)\s+(?:is|at|for|cost)\s+(\$[\d.,]+\s*[mkb]?)/i,
+        /(?:purchase\s+price|land\s+(?:cost|value|price))\s+(?:is|of|:)?\s*(\$[\d.,]+\s*[mkb]?)/i,
+      ];
+      for (const pat of purchasePatterns) {
+        const m = text.match(pat);
+        if (m) {
+          extracted.purchasePriceRaw = m[1].trim();
+          console.log('[CONV-EXTRACT] Purchase price (inline):', extracted.purchasePriceRaw);
+          break;
+        }
+      }
+    }
+
+    // GRV: "GR 10m", "GRV $10m", "gross revenue $10m", "worth $5m each (GR 10m)", "revenue of $10m"
+    if (!extracted.grvRaw) {
+      const grvPatterns = [
+        /(?:gr|grv|gross\s*(?:revenue|realisation|realization))\s*(?:of|is|:)?\s*\$?([\d.,]+\s*[mkb](?:illion|il)?)/i,
+        /\(\s*(?:gr|grv)\s*\$?([\d.,]+\s*[mkb]?)\s*\)/i,
+        /(?:total\s+)?(?:revenue|grv|gr)\s+(?:of\s+)?\$?([\d.,]+\s*[mkb]?)/i,
+        /(?:sell|selling|worth)\s+(?:for\s+)?\$?([\d.,]+\s*[mkb]?)\s*(?:total|all\s*up|gross|grv)/i,
+      ];
+      for (const pat of grvPatterns) {
+        const m = text.match(pat);
+        if (m) {
+          // Add $ prefix if missing
+          const val = m[1].trim();
+          extracted.grvRaw = val.startsWith('$') ? val : '$' + val;
+          console.log('[CONV-EXTRACT] GRV (inline):', extracted.grvRaw);
+          break;
+        }
+      }
+    }
+
+    // CONSTRUCTION COST: "cost $3.5m to build", "construction $3.5m", "build cost $3.5m", "itll cost $3.5m"
+    if (!extracted.constructionCostRaw) {
+      const constructionPatterns = [
+        /(?:cost|construction|build)\s+(?:is\s+|of\s+|about\s+|around\s+)?(\$[\d.,]+\s*[mkb](?:illion|il)?)\s*(?:to\s+build|construction|to\s+construct)?/i,
+        /(\$[\d.,]+\s*[mkb](?:illion|il)?)\s+(?:to\s+build|construction\s+cost|build\s+cost)/i,
+        /(?:it(?:'?ll|s?\s+going\s+to|s?\s+gonna)\s+)?cost\s+(\$[\d.,]+\s*[mkb]?)\s*(?:to\s+build)?/i,
+        /(?:construction|build(?:ing)?)\s+(?:cost|budget)\s+(?:is|of|:)?\s*(\$[\d.,]+\s*[mkb]?)/i,
+      ];
+      for (const pat of constructionPatterns) {
+        const m = text.match(pat);
+        if (m) {
+          extracted.constructionCostRaw = m[1].trim();
+          console.log('[CONV-EXTRACT] Construction cost (inline):', extracted.constructionCostRaw);
+          break;
+        }
+      }
     }
   }
 
