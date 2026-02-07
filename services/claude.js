@@ -67,41 +67,63 @@ function fixBulletPoints(text) {
 
 /**
  * Force paragraph breaks every 2-3 sentences
+ * ONLY applies to plain prose paragraphs. Preserves:
+ * - Bullet point lists (lines starting with • or -)
+ * - Numbered lists
+ * - Lines with colons (headers/labels like "Revenue:")
+ * - Feasibility output (structured data)
+ * - Existing paragraph breaks
  */
 function formatIntoParagraphs(text) {
   if (!text) return text;
-  
+
+  // If text already has structure (bullets, multiple newlines, headers), preserve it
+  const hasBullets = /^[•\-]\s/m.test(text);
+  const hasHeaders = /^[A-Z][A-Za-z\s]+:/m.test(text);
+  const hasMultipleParagraphs = (text.match(/\n\n/g) || []).length >= 2;
+
+  if (hasBullets || hasHeaders || hasMultipleParagraphs) {
+    // Already structured — just clean up excessive whitespace
+    return text.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Plain prose: split into sentences and group into paragraphs
   let normalized = text.replace(/\n+/g, ' ').replace(/  +/g, ' ').trim();
-  
+
+  // Common abbreviations that shouldn't trigger sentence splits
+  const abbrevs = /(?:Dr|Mr|Mrs|Ms|Prof|St|Ave|Rd|Ltd|Inc|Corp|etc|vs|approx|e\.g|i\.e)\./gi;
+  // Temporarily replace abbreviation dots
+  let temp = normalized.replace(abbrevs, (match) => match.replace('.', '§DOT§'));
+
   const sentences = [];
   let current = '';
-  
-  for (let i = 0; i < normalized.length; i++) {
-    current += normalized[i];
-    
-    if (normalized[i] === '.' && 
-        (i === normalized.length - 1 || 
-         (normalized[i + 1] === ' ' && /[A-Z]/.test(normalized[i + 2] || '')))) {
-      sentences.push(current.trim());
+
+  for (let i = 0; i < temp.length; i++) {
+    current += temp[i];
+
+    if (temp[i] === '.' &&
+        (i === temp.length - 1 ||
+         (temp[i + 1] === ' ' && /[A-Z]/.test(temp[i + 2] || '')))) {
+      sentences.push(current.trim().replace(/§DOT§/g, '.'));
       current = '';
-      i++;
+      i++; // skip the space
     }
   }
-  
+
   if (current.trim()) {
-    sentences.push(current.trim());
+    sentences.push(current.trim().replace(/§DOT§/g, '.'));
   }
-  
+
   if (sentences.length <= 3) {
     return sentences.join(' ');
   }
-  
+
   const paragraphs = [];
   for (let i = 0; i < sentences.length; i += 3) {
     const group = sentences.slice(i, i + 3);
     paragraphs.push(group.join(' '));
   }
-  
+
   return paragraphs.join('\n\n');
 }
 
@@ -129,9 +151,11 @@ function extractConversationContext(conversationHistory) {
     return context;
   }
 
-  // Track if planning controls have been set from City Plan (get_property_info)
-  // Once set, they should NOT be overridden by DA documents
-  let planningControlsLocked = false;
+  // Track which individual planning controls have been set from City Plan (get_property_info)
+  // Only lock fields that were actually found — don't block others from fallback extraction
+  let zoneLocked = false;
+  let densityLocked = false;
+  let heightLocked = false;
 
   // Scan through history looking for property data and strategy signals
   for (const msg of conversationHistory) {
@@ -146,28 +170,28 @@ function extractConversationContext(conversationHistory) {
           try {
             const toolResultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
 
-            // Check if this looks like a property lookup result
+            // Check if this looks like a property lookup result (must have both markers)
             if (toolResultText.includes('"success":true') && toolResultText.includes('"property":{')) {
               const toolResult = JSON.parse(toolResultText);
 
               if (toolResult.success && toolResult.property) {
                 const prop = toolResult.property;
 
-                // Set planning controls (from City Plan - IMMUTABLE)
+                // Set planning controls per-field (from City Plan - IMMUTABLE once set)
                 if (prop.zone) {
                   context.lastZone = prop.zone;
-                  planningControlsLocked = true;
+                  zoneLocked = true;
                 }
                 if (prop.density) {
                   context.lastDensity = prop.density;
-                  planningControlsLocked = true;
+                  densityLocked = true;
                 }
                 if (prop.height) {
                   context.lastHeight = prop.height;
-                  planningControlsLocked = true;
+                  heightLocked = true;
                 }
 
-                // Also extract basic property info
+                // Always update property info from tool results (latest wins)
                 if (prop.address) {
                   context.lastProperty = prop.address;
                 }
@@ -183,14 +207,15 @@ function extractConversationContext(conversationHistory) {
               }
             }
           } catch (e) {
-            // Not JSON or not a property result, skip
+            console.log('[CONTEXT] Tool result parse skipped (not JSON or not property result)');
           }
         }
       }
     }
 
     // Look for property addresses (fallback for user-mentioned addresses)
-    const addressMatch = content.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln)),?\s*([\w\s]+?)(?:,|\s+QLD|\s+\d{4}|$)/i);
+    // Updated regex: require at least one word before street type, limit capture width
+    const addressMatch = content.match(/(\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\s+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln|terrace|tce|boulevard|blvd|esplanade|esp)),?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)(?:,|\s+QLD|\s+\d{4}|$)/i);
     if (addressMatch && !context.lastProperty) {
       context.lastProperty = addressMatch[0].trim();
       context.lastSuburb = addressMatch[2]?.trim();
@@ -216,23 +241,29 @@ function extractConversationContext(conversationHistory) {
     }
 
     // Look for site area (fallback, only if not already set by property lookup)
+    // Support decimal areas like "1500.5 sqm"
     if (!context.lastSiteArea) {
-      const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
+      const areaMatch = content.match(/([\d,.]+)\s*(?:sqm|m2|m²|square\s*met)/i);
       if (areaMatch) {
-        context.lastSiteArea = parseInt(areaMatch[1]);
+        const parsed = parseFloat(areaMatch[1].replace(/,/g, ''));
+        if (!isNaN(parsed) && parsed > 0) {
+          context.lastSiteArea = Math.round(parsed);
+        }
       }
     }
 
     // CRITICAL: DO NOT extract density codes or height limits from general text
     // These MUST come from get_property_info to avoid contamination from DA documents
-    // Only extract if planning controls haven't been locked by City Plan data
-    if (!planningControlsLocked) {
-      const densityMatch = content.match(/\b(RD[1-8])\b/i);
+    // Only extract if the SPECIFIC field hasn't been locked by City Plan data
+    if (!densityLocked) {
+      const densityMatch = content.match(/\b(RD\d{1,2})\b/i);
       if (densityMatch && !context.lastDensity) {
         context.lastDensity = densityMatch[1].toUpperCase();
       }
+    }
 
-      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
+    if (!heightLocked) {
+      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*(?:height|tall)/i);
       if (heightMatch && !context.lastHeight) {
         context.lastHeight = `${heightMatch[1]}m`;
       }
@@ -285,30 +316,25 @@ function extractConversationContext(conversationHistory) {
 function parseButtonOptions(text) {
   if (!text) return null;
 
-  // Match pattern like "[60%] [70%] [80%] [Fully funded]"
-  const buttonPattern = /\[([^\]]+)\](?:\s*\[([^\]]+)\])+/g;
-  const matches = [...text.matchAll(buttonPattern)];
-
-  if (matches.length === 0) return null;
-
-  // Extract all button options from the text
+  // Extract ALL [bracketed] options from the text
+  // Supports single buttons and multi-button groups
   const allButtons = [];
-  for (const match of matches) {
-    // Get the full match and extract all individual buttons
-    const fullMatch = match[0];
-    const individualButtons = fullMatch.match(/\[([^\]]+)\]/g);
+  const individualPattern = /\[([^\]]+)\]/g;
+  let match;
 
-    if (individualButtons) {
-      for (const btn of individualButtons) {
-        const buttonText = btn.replace(/[\[\]]/g, '').trim();
-        if (buttonText && !allButtons.includes(buttonText)) {
-          allButtons.push(buttonText);
-        }
-      }
+  while ((match = individualPattern.exec(text)) !== null) {
+    const buttonText = match[1].trim();
+    // Filter out markdown-style links like [text](url) and common false positives
+    if (buttonText &&
+        !allButtons.includes(buttonText) &&
+        !text.substring(match.index + match[0].length).startsWith('(') && // not a markdown link
+        buttonText.length < 60) { // reasonable button text length
+      allButtons.push(buttonText);
     }
   }
 
-  return allButtons.length > 0 ? allButtons : null;
+  // Need at least 2 buttons to be meaningful (single bracket is likely not a button)
+  return allButtons.length >= 2 ? allButtons : null;
 }
 
 /**
@@ -459,15 +485,16 @@ function classifyIntent(query, conversationContext) {
  */
 async function handleConversationalMessage(userQuery, conversationHistory, context) {
   const messages = [];
-  
+
   // Add recent history (last 10 messages max for context)
+  // Only include string content — skip tool_result blocks for conversational responses
   if (conversationHistory?.length > 0) {
     const recent = conversationHistory.slice(-10);
     for (const msg of recent) {
-      if (msg.content) {
+      if (msg.content && typeof msg.content === 'string' && msg.content.trim()) {
         messages.push({
           role: msg.role,
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          content: msg.content.trim()
         });
       }
     }
@@ -1096,25 +1123,32 @@ ${contextSummary}`;
     // Build messages array with conversation history
     const messages = [];
     
-    if (conversationHistory && conversationHistory.length > 0) {
+    if (conversationHistory && Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       console.log('[CLAUDE] Adding conversation history...');
       const recentHistory = conversationHistory.slice(-20);
-      
+
       for (const msg of recentHistory) {
-        if (msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true)) {
-          const content = typeof msg.content === 'string' 
-            ? msg.content.trim() 
-            : msg.content;
-          
-          if (content && (typeof content !== 'string' || content.length > 0)) {
-            messages.push({
-              role: msg.role,
-              content: content
-            });
+        // Validate message structure
+        if (!msg || !msg.role || !msg.content) continue;
+        if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+
+        if (typeof msg.content === 'string') {
+          const trimmed = msg.content.trim();
+          if (trimmed.length > 0) {
+            messages.push({ role: msg.role, content: trimmed });
+          }
+        } else if (Array.isArray(msg.content)) {
+          // Structured content (e.g., tool_result blocks) - pass through if valid
+          const validBlocks = msg.content.filter(block =>
+            block && typeof block === 'object' && block.type
+          );
+          if (validBlocks.length > 0) {
+            messages.push({ role: msg.role, content: validBlocks });
           }
         }
+        // Skip non-string, non-array content (objects, numbers, etc.)
       }
-      
+
       console.log('[CLAUDE] Filtered history:', messages.length, 'messages');
     }
     
@@ -1232,8 +1266,8 @@ ${contextSummary}`;
         let searchAddress = toolUse.input.address;
         const inputSuburb = toolUse.input.suburb;
 
-        // Check if address already has suburb
-        const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami)/i.test(searchAddress);
+        // Check if address already has a Gold Coast suburb
+        const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami|nobby|runaway bay|sanctuary cove|main beach|labrador|arundel|ashmore|benowa|biggera waters|bundall|carrara|clear island|coombabah|coomera|elanora|helensvale|highland park|hollywell|mudgeeraba|nerang|ormeau|oxenford|pacific pines|paradise point|parkwood|reedy creek|tallebudgera|upper coomera|worongary|springbrook|pimpama|molendinar|merrimac)/i.test(searchAddress);
 
         if (!hasSuburb) {
           // Try to add suburb from input or context
@@ -1502,6 +1536,11 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       // Standard feasibility - pass conversation history so backend can extract REAL values
       if (sendProgress) sendProgress('📊 Crunching the numbers...');
       result = runQuickFeasibility(input, address, fullHistory);
+    }
+
+    // Handle null/undefined result
+    if (!result) {
+      throw new Error('Feasibility engine returned no result');
     }
 
     // Handle validation errors (missing required inputs)

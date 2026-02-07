@@ -244,24 +244,27 @@ export function parseAllInputs(rawInputs) {
 
 /**
  * QLD Stamp Duty calculation (commercial/investment property)
- * Based on QLD transfer duty rates for property purchases
+ * Based on current QLD Revenue Office transfer duty rates (2025-26)
+ * Source: https://www.qld.gov.au/housing/buying-owning-home/transfer-duty
  */
 function calculateStampDutyQLD(value) {
   if (value <= 5000) return 0;
   if (value <= 75000) return value * 0.015;
-  if (value <= 540000) return 1050 + (value - 75000) * 0.035;
-  if (value <= 1000000) return 17325 + (value - 540000) * 0.045;
-  return 38025 + (value - 1000000) * 0.0575;
+  if (value <= 540000) return 1125 + (value - 75000) * 0.035;
+  if (value <= 1000000) return 17400 + (value - 540000) * 0.045;
+  return 38100 + (value - 1000000) * 0.0575;
 }
 
 /**
  * QLD Land Tax calculation (company/trust rate)
+ * Updated to current QRO rates (2025-26)
+ * Source: https://www.qld.gov.au/environment/land/tax/calculation
  */
 function calculateLandTaxQLD(landValue) {
   if (landValue <= 350000) return 0;
-  if (landValue <= 2100000) return 1450 + (landValue - 350000) * 0.017;
-  if (landValue <= 5000000) return 31200 + (landValue - 2100000) * 0.015;
-  return 74700 + (landValue - 5000000) * 0.02;
+  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
+  return 75000 + (landValue - 5000000) * 0.02;
 }
 
 /**

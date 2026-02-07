@@ -49,17 +49,17 @@ function calculateStampDutyQLD(price) {
 
 /**
  * Calculate land tax for QLD (Companies/Trusts)
- * Based on QLD land tax rates:
+ * Updated to current QRO rates (2025-26):
  * - Under $350k: $0
- * - $350k - $2.1M: $1,450 + 1.7% of amount over $350k
- * - $2.1M - $5M: $31,200 + 1.5% of amount over $2.1M
- * - Over $5M: $74,700 + 2.0% of amount over $5M
+ * - $350k - $2.25M: $1,450 + 1.7% of amount over $350k
+ * - $2.25M - $5M: $33,750 + 1.5% of amount over $2.25M
+ * - Over $5M: $75,000 + 2.0% of amount over $5M
  */
 export function calculateLandTaxQLD(landValue) {
   if (landValue < 350000) return 0;
-  if (landValue <= 2100000) return 1450 + (landValue - 350000) * 0.017;
-  if (landValue <= 5000000) return 31200 + (landValue - 2100000) * 0.015;
-  return 74700 + (landValue - 5000000) * 0.02;
+  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
+  return 75000 + (landValue - 5000000) * 0.02;
 }
 
 /**
