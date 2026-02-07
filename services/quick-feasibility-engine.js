@@ -158,24 +158,54 @@ function parseGSTCostBase(input, landValue) {
 }
 
 /**
- * Parse LVR - special handling for "fully funded"
+ * Parse LVR - handles both equity and debt funding interpretations.
  *
- * "Fully funded" = 0% LVR = NO DEBT (100% equity financed).
- * Standard Australian property dev terminology:
- *   - "Fully funded" = developer has all the cash, no bank debt
- *   - For 100% debt financing, user should specify "100%" or "100% debt"
+ * PRIORITY ORDER:
+ *   1. Explicit "100% debt" / "100% equity" / "no debt" → unambiguous
+ *   2. Explicit percentage number (e.g., "100%", "80%") → treat as LVR (debt %)
+ *   3. "Fully funded" alone (no number) → 0% LVR (equity funded, no debt)
  *
- * NOTE FOR LOVABLE TEAM: Consider changing UI button label from "Fully funded"
- * to "No debt (100% equity)" to eliminate ambiguity. The button sequence
- * "60% | 70% | 80% | Fully funded" could be misread as escalating debt levels.
+ * This order means "fully funded. 100%" → 100% LVR (the explicit number wins),
+ * while "fully funded" alone → 0% LVR (no debt).
+ *
+ * NOTE FOR LOVABLE TEAM: Button options should be:
+ *   "60% debt | 70% debt | 80% debt | 100% debt | No debt (100% equity) | Custom"
+ * This eliminates ALL ambiguity — user picks exactly what they mean.
  */
 function parseLVR(input) {
   if (!input) return 0;
   const str = String(input).toLowerCase().trim();
-  if (str.includes('fully funded') || str.includes('full fund') || str.includes('no debt') || str.includes('cash') || str === '0' || str === '0%') {
-    console.log('[FEASO-PARSE] LVR: "' + input + '" → 0% (fully equity funded, no debt)');
-    return 0; // 0% LVR = no debt = fully equity funded
+
+  // 1. Explicit "no debt" / "equity" / "cash" keywords → always 0% LVR
+  if (str.includes('no debt') || str.includes('equity') || str.includes('cash')) {
+    console.log('[FEASO-PARSE] LVR: "' + input + '" → 0% (no debt / equity funded)');
+    return 0;
   }
+
+  // 2. Explicit "100% debt" or "full debt" → always 100% LVR
+  if ((str.includes('100') && str.includes('debt')) || str.includes('full debt')) {
+    console.log('[FEASO-PARSE] LVR: "' + input + '" → 100% (fully debt funded)');
+    return 100;
+  }
+
+  // 3. If there's an explicit number, parse it as LVR percentage
+  //    This catches "100%", "80%", "fully funded. 100%", "70" etc.
+  const numMatch = str.match(/(\d+(?:\.\d+)?)\s*%?/);
+  if (numMatch) {
+    const num = parseFloat(numMatch[1]);
+    if (num >= 0 && num <= 100) {
+      console.log('[FEASO-PARSE] LVR: "' + input + '" → ' + num + '% (explicit number)');
+      return num;
+    }
+  }
+
+  // 4. "Fully funded" with NO number → interpret as 0% LVR (equity funded)
+  if (str.includes('fully funded') || str.includes('full fund')) {
+    console.log('[FEASO-PARSE] LVR: "' + input + '" → 0% (fully funded = equity, no number provided)');
+    return 0;
+  }
+
+  // 5. Fallback
   return parsePercentage(input);
 }
 
