@@ -12,11 +12,31 @@ const SERVICES = {
 
 // WHITELIST: Only query layers verified to return accurate data
 const VERIFIED_OVERLAY_LAYERS = [
-  1, 2, 7, 9, 13, 15, 17, 19, 21, 24, 25, 26, 28, 31, 32, 33, 34, 36, 39, 41, 42, 43, 44,
+  1, 2, 4, 5, 7, 9, 11, 13, 14, 15, 17, 18, 19, 21, 22, 24, 25, 26, 28, 31, 32, 33, 34, 36, 39, 41, 42, 43, 44,
   47, 48, 50, 53, 55, 56, 59, 61, 62, 64, 65, 66, 74, 75, 76, 78, 80, 90, 91, 92, 93, 94,
   95, 96, 100, 101, 102, 103, 107, 111, 112, 113, 114, 115, 116, 117, 118, 120, 122, 123,
   124, 126, 127, 129, 130, 131
 ];
+
+// Layer ID to parent group name mapping for full overlay descriptions
+// Maps individual layer IDs to their parent group's full descriptive name
+const OVERLAY_PARENT_NAMES = {
+  4: "Airport environs - Airservices Australia aviation facilities",
+  5: "Airport environs - Airservices Australia aviation facilities",
+  7: "Airport environs - Australian Noise Exposure Forecast (ANEF) contour",
+  9: "Airport environs - lighting area buffer zones",
+  11: "Airport environs - Obstacle Limitation Surface (OLS)",
+  13: "Airport environs - Obstacle Limitation Surface (OLS)",
+  14: "Airport environs - Obstacle Limitation Surface (OLS)",
+  15: "Airport environs - Obstacle Limitation Surface (OLS)",
+  17: "Airport environs - Procedures for Air Navigation Services, Aircraft Operational (PANS-OPS) surfaces",
+  18: "Airport environs - Procedures for Air Navigation Services, Aircraft Operational (PANS-OPS) surfaces",
+  19: "Airport environs - Procedures for Air Navigation Services, Aircraft Operational (PANS-OPS) surfaces",
+  21: "Airport environs - public safety area",
+  22: "Airport environs - public safety area",
+  24: "Airport environs - wildlife hazard buffer zones",
+  25: "Airport environs - wildlife hazard buffer zones"
+};
 
 /**
  * Extract street name from an address for comparison
@@ -816,8 +836,16 @@ export async function scrapeProperty(query, sendProgress = null) {
     
     const densityOverlay = overlays.find(o => o.layerId === 117);
     const density = densityOverlay?.attributes?.Residential_Density || null;
-    
-    const overlayNames = [...new Set(overlays.map(o => o.layerName))];
+
+    // Extract overlay names - use parent group name (full description) if available, otherwise use layer name
+    const overlayNames = [...new Set(overlays.map(o => {
+      // Use mapped parent name if available
+      if (OVERLAY_PARENT_NAMES[o.layerId]) {
+        return OVERLAY_PARENT_NAMES[o.layerId];
+      }
+      // Otherwise use the layer name as fallback
+      return o.layerName;
+    }))];
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`[API] ✓ Complete in ${elapsed}s`);
@@ -938,8 +966,16 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
 
     if (sendProgress) sendProgress('🗺️ Checking overlays...');
     const overlays = await getOverlays(lotGeometry);
-    
-    const overlayNames = [...new Set(overlays.map(o => o.layerName))];
+
+    // Extract overlay names - use parent group name (full description) if available, otherwise use layer name
+    const overlayNames = [...new Set(overlays.map(o => {
+      // Use mapped parent name if available
+      if (OVERLAY_PARENT_NAMES[o.layerId]) {
+        return OVERLAY_PARENT_NAMES[o.layerId];
+      }
+      // Otherwise use the layer name as fallback
+      return o.layerName;
+    }))];
     
     return {
       success: true,
