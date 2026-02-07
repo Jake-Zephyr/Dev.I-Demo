@@ -1476,9 +1476,13 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
   if (sendProgress) sendProgress('🔢 Parsing inputs...');
 
   const input = toolUse.input;
-  // PRIORITY: Use current session's property (from get_property_info) over Claude's passed address
-  // Claude may hallucinate addresses from previous conversations
-  const address = conversationContext.lastProperty || input.propertyAddress || '';
+  // FIX 4: Only use address explicitly provided by Claude from CURRENT conversation.
+  // Do NOT silently inject from conversationContext.lastProperty — that may contain
+  // a stale address from a previous session if frontend didn't clear conversationHistory.
+  const address = input.propertyAddress || '';
+  if (!address && conversationContext.lastProperty) {
+    console.log('[FEASO] Previous property in context:', conversationContext.lastProperty, '— NOT auto-injecting (must come from current conversation)');
+  }
   const mode = input.mode || 'standard';
 
   try {
@@ -1500,22 +1504,35 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       result = runQuickFeasibility(input, address, fullHistory);
     }
 
-    if (sendProgress) sendProgress('✅ Feasibility calculated');
+    // Handle validation errors (missing required inputs)
+    if (result.validationErrors) {
+      console.log('[FEASO] Validation failed — missing inputs:', result.validationErrors);
+      if (sendProgress) sendProgress('⚠️ Missing required inputs');
+      toolResult = {
+        success: false,
+        feasibilityMode: 'results',
+        formattedResponse: result.formattedResponse,
+        calculationData: result.calculationData,
+        parsedInputs: result.parsedInputs
+      };
+    } else {
+      if (sendProgress) sendProgress('✅ Feasibility calculated');
 
-    console.log('[FEASO] ========== RESULTS ==========');
-    console.log('[FEASO] Profit:', result.calculationData.profitability.grossProfit);
-    console.log('[FEASO] Margin:', result.calculationData.profitability.profitMargin + '%');
-    console.log('[FEASO] Viability:', result.calculationData.profitability.viabilityLabel);
-    console.log('[FEASO] ========== END ==========');
+      console.log('[FEASO] ========== RESULTS ==========');
+      console.log('[FEASO] Profit:', result.calculationData.profitability.grossProfit);
+      console.log('[FEASO] Margin:', result.calculationData.profitability.profitMargin + '%');
+      console.log('[FEASO] Viability:', result.calculationData.profitability.viabilityLabel);
+      console.log('[FEASO] ========== END ==========');
 
-    // Return the pre-formatted response + structured data
-    toolResult = {
-      success: true,
-      feasibilityMode: 'results',
-      formattedResponse: result.formattedResponse,
-      calculationData: result.calculationData,
-      parsedInputs: result.parsedInputs
-    };
+      // Return the pre-formatted response + structured data
+      toolResult = {
+        success: true,
+        feasibilityMode: 'results',
+        formattedResponse: result.formattedResponse,
+        calculationData: result.calculationData,
+        parsedInputs: result.parsedInputs
+      };
+    }
   } catch (calcError) {
     console.error('[FEASO] Calculation error:', calcError.message);
     console.error('[FEASO] Stack:', calcError.stack);
@@ -1608,7 +1625,8 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
         if (nextTool.name === 'calculate_quick_feasibility') {
           console.log('[CLAUDE] Follow-up: calculate_quick_feasibility — bypassing');
           const fInput = nextTool.input;
-          const fAddress = conversationContext.lastProperty || fInput.propertyAddress || '';
+          // FIX 4: No auto-injection of previous address in follow-up path either
+          const fAddress = fInput.propertyAddress || '';
           const fMode = fInput.mode || 'standard';
 
           try {

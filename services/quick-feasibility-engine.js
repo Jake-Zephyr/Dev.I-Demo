@@ -159,12 +159,22 @@ function parseGSTCostBase(input, landValue) {
 
 /**
  * Parse LVR - special handling for "fully funded"
+ *
+ * "Fully funded" = 0% LVR = NO DEBT (100% equity financed).
+ * Standard Australian property dev terminology:
+ *   - "Fully funded" = developer has all the cash, no bank debt
+ *   - For 100% debt financing, user should specify "100%" or "100% debt"
+ *
+ * NOTE FOR LOVABLE TEAM: Consider changing UI button label from "Fully funded"
+ * to "No debt (100% equity)" to eliminate ambiguity. The button sequence
+ * "60% | 70% | 80% | Fully funded" could be misread as escalating debt levels.
  */
 function parseLVR(input) {
   if (!input) return 0;
   const str = String(input).toLowerCase().trim();
   if (str.includes('fully funded') || str.includes('full fund') || str.includes('no debt') || str.includes('cash') || str === '0' || str === '0%') {
-    return 0;
+    console.log('[FEASO-PARSE] LVR: "' + input + '" → 0% (fully equity funded, no debt)');
+    return 0; // 0% LVR = no debt = fully equity funded
   }
   return parsePercentage(input);
 }
@@ -899,63 +909,208 @@ export function extractInputsFromConversation(conversationHistory) {
 
 
 // ============================================================
-// SECTION 6: MAIN ENTRY POINT
+// SECTION 6: INPUT VALIDATION & MISMATCH DETECTION
 // ============================================================
 
 /**
- * Complete quick feasibility pipeline
- * 1. Extract inputs from conversation history (GROUND TRUTH)
- * 2. Merge with Claude's passed inputs (fallback)
- * 3. Parse raw strings to numbers
- * 4. Calculate everything
- * 5. Format response
+ * Validate that all required inputs are present before calculation.
+ * Returns missing fields (blocking) and warnings (non-blocking).
  *
- * Returns: { formattedResponse, calculationData, parsedInputs }
+ * FIX 5: Refuse to calculate on missing inputs — never produce
+ * confident-looking results with fabricated/default data.
  */
-export function runQuickFeasibility(rawInputs, address, conversationHistory) {
-  // Step 1: Try to extract inputs from conversation history (most reliable)
-  const conversationInputs = extractInputsFromConversation(conversationHistory);
+function validateRequiredInputs(parsed, mode) {
+  const missing = [];
+  const warnings = [];
 
-  // Step 2: Merge - conversation history wins over Claude's passed values
-  let finalInputs;
-  if (conversationInputs) {
-    console.log('[FEASO-ENGINE] Using conversation-extracted inputs (overriding Claude)');
-    finalInputs = {
-      purchasePriceRaw: conversationInputs.purchasePriceRaw || rawInputs.purchasePriceRaw,
-      grvRaw: conversationInputs.grvRaw || rawInputs.grvRaw,
-      constructionCostRaw: conversationInputs.constructionCostRaw || rawInputs.constructionCostRaw,
-      lvrRaw: conversationInputs.lvrRaw || rawInputs.lvrRaw,
-      interestRateRaw: conversationInputs.interestRateRaw || rawInputs.interestRateRaw,
-      timelineRaw: conversationInputs.timelineRaw || rawInputs.timelineRaw,
-      sellingCostsRaw: conversationInputs.sellingCostsRaw || rawInputs.sellingCostsRaw,
-      gstSchemeRaw: conversationInputs.gstSchemeRaw || rawInputs.gstSchemeRaw,
-      gstCostBaseRaw: conversationInputs.gstCostBaseRaw || rawInputs.gstCostBaseRaw
-    };
-
-    // Log comparison: what Claude passed vs what conversation actually had
-    console.log('[FEASO-ENGINE] === INPUT COMPARISON ===');
-    const fields = ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw'];
-    for (const f of fields) {
-      const claudeVal = rawInputs[f] || '(not provided)';
-      const convVal = conversationInputs[f] || '(not found)';
-      const match = claudeVal === convVal;
-      console.log(`  ${f}: Claude="${claudeVal}" | Conversation="${convVal}" | ${match ? 'MATCH' : 'MISMATCH - using conversation'}`);
-    }
-    console.log('[FEASO-ENGINE] === END COMPARISON ===');
-  } else {
-    console.log('[FEASO-ENGINE] No conversation history available, using Claude inputs only');
-    finalInputs = rawInputs;
+  // Required fields (land not required in residual mode)
+  if (mode !== 'residual' && (!parsed.landValue || parsed.landValue <= 0)) {
+    missing.push('Land/Acquisition Cost');
+  }
+  if (!parsed.grvTotal || parsed.grvTotal <= 0) {
+    missing.push('Target GRV (Gross Revenue)');
+  }
+  if (!parsed.constructionCost || parsed.constructionCost <= 0) {
+    missing.push('Construction Cost');
+  }
+  if (!parsed.timelineMonths || parsed.timelineMonths <= 0) {
+    missing.push('Project Timeline');
   }
 
-  // Step 3: Parse
+  // Sanity warnings (non-blocking — calculation still runs)
+  if (parsed.landValue > 0 && parsed.grvTotal > 0 && parsed.landValue > parsed.grvTotal) {
+    warnings.push('Land value exceeds GRV — project will always be negative');
+  }
+  if (parsed.constructionCost > 0 && parsed.grvTotal > 0 && parsed.constructionCost > parsed.grvTotal * 0.9) {
+    warnings.push('Construction cost exceeds 90% of GRV — please verify');
+  }
+  if (parsed.timelineMonths > 60) {
+    warnings.push('Timeline exceeds 5 years — is this correct?');
+  }
+  if (parsed.interestRate > 15) {
+    warnings.push('Interest rate above 15% — please verify');
+  }
+
+  return { missing, warnings, isValid: missing.length === 0 };
+}
+
+/**
+ * Detect material mismatches between Claude's tool arguments and
+ * conversation extraction results. A mismatch > 15% on any numeric
+ * field is a strong signal that extraction grabbed stale/wrong data.
+ *
+ * FIX 2: Input mismatch detection gate.
+ */
+function detectInputMismatches(claudeInputs, extractedInputs) {
+  const mismatches = [];
+  const fields = [
+    { key: 'purchasePriceRaw', label: 'Purchase Price', parser: parseMoneyValue },
+    { key: 'grvRaw', label: 'GRV', parser: parseMoneyValue },
+    { key: 'constructionCostRaw', label: 'Construction Cost', parser: (v) => parseConstructionCost(v).total },
+    { key: 'interestRateRaw', label: 'Interest Rate', parser: parsePercentage },
+    { key: 'timelineRaw', label: 'Timeline', parser: parseTimeline },
+    { key: 'sellingCostsRaw', label: 'Selling Costs', parser: parsePercentage },
+  ];
+
+  for (const { key, label, parser } of fields) {
+    const claudeRaw = claudeInputs[key];
+    const extractedRaw = extractedInputs[key];
+
+    if (!claudeRaw || !extractedRaw) continue;
+
+    const claudeVal = parser(claudeRaw);
+    const extractedVal = parser(extractedRaw);
+
+    if (claudeVal === 0 || extractedVal === 0) continue;
+
+    const diff = Math.abs(claudeVal - extractedVal) / Math.max(claudeVal, extractedVal);
+    if (diff > 0.15) { // More than 15% difference = likely stale data
+      mismatches.push({
+        field: label,
+        key,
+        claudeRaw,
+        extractedRaw,
+        claudeValue: claudeVal,
+        extractedValue: extractedVal,
+        diffPercent: Math.round(diff * 100)
+      });
+    }
+  }
+
+  return mismatches;
+}
+
+
+// ============================================================
+// SECTION 7: MAIN ENTRY POINT
+// ============================================================
+
+/**
+ * Complete quick feasibility pipeline (REVISED ARCHITECTURE)
+ *
+ * KEY CHANGE: Claude's tool arguments are now PRIMARY.
+ * Conversation extraction is used as VALIDATION + GAP-FILLER only.
+ *
+ * Previous architecture trusted extraction over Claude (to prevent hallucination).
+ * But if conversationHistory contains stale messages from a previous session,
+ * extraction would override current inputs with old data — causing catastrophic
+ * "wrong numbers that look right" failures.
+ *
+ * New priority:
+ *   1. Claude's tool args (from current conversation) = PRIMARY
+ *   2. Conversation extraction = FILLS GAPS only (never overrides)
+ *   3. If mismatch detected between the two, log warning + use Claude's values
+ *   4. Validate all required inputs before calculating — refuse if missing
+ *
+ * Returns: { formattedResponse, calculationData, parsedInputs, inputSources }
+ */
+export function runQuickFeasibility(rawInputs, address, conversationHistory) {
+  console.log('[FEASO] ====== PIPELINE START ======');
+  console.log('[FEASO] LOG 1 — Tool args from Claude:', JSON.stringify(rawInputs, null, 2));
+  console.log('[FEASO] LOG 2 — Address received:', address || '(none)');
+  console.log('[FEASO] LOG 3 — Conversation history length:', conversationHistory?.length || 0);
+
+  // Step 1: Extract from conversation (VALIDATION source, not primary)
+  const conversationInputs = extractInputsFromConversation(conversationHistory);
+  console.log('[FEASO] LOG 4 — Conversation extraction:', conversationInputs ? JSON.stringify(conversationInputs, null, 2) : '(null — no extraction)');
+
+  // Step 2: INVERTED PRIORITY — Claude's tool args are PRIMARY
+  // Conversation extraction only FILLS GAPS (never overrides present values)
+  const inputFields = ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw',
+    'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw', 'gstCostBaseRaw'];
+
+  let finalInputs = {};
+  let inputSources = {};
+
+  if (conversationInputs) {
+    // FIX 2: Detect mismatches before merging
+    const mismatches = detectInputMismatches(rawInputs, conversationInputs);
+    if (mismatches.length > 0) {
+      console.warn('[FEASO] ⚠️ INPUT MISMATCHES DETECTED (likely stale conversation history):');
+      for (const m of mismatches) {
+        console.warn(`  ${m.field}: Claude="${m.claudeRaw}" (${m.claudeValue}) vs Extraction="${m.extractedRaw}" (${m.extractedValue}) — ${m.diffPercent}% diff`);
+      }
+      console.warn('[FEASO] → Using Claude\'s values for all fields where Claude provided a value');
+    }
+
+    // FIX 3: Build final inputs — Claude PRIMARY, extraction fills gaps only
+    for (const f of inputFields) {
+      if (rawInputs[f]) {
+        finalInputs[f] = rawInputs[f];
+        inputSources[f] = 'claude_tool_args';
+      } else if (conversationInputs[f]) {
+        finalInputs[f] = conversationInputs[f];
+        inputSources[f] = 'conversation_extraction_fallback';
+      } else {
+        finalInputs[f] = undefined;
+        inputSources[f] = 'not_provided';
+      }
+    }
+
+    // Log comparison
+    console.log('[FEASO] === INPUT SOURCE MAP ===');
+    for (const f of inputFields) {
+      const claudeVal = rawInputs[f] || '(empty)';
+      const convVal = conversationInputs[f] || '(empty)';
+      console.log(`  ${f}: source=${inputSources[f]} | Claude="${claudeVal}" | Extraction="${convVal}"`);
+    }
+    console.log('[FEASO] === END SOURCE MAP ===');
+  } else {
+    console.log('[FEASO] No conversation extraction available — using Claude inputs only');
+    finalInputs = { ...rawInputs };
+    for (const f of inputFields) {
+      inputSources[f] = rawInputs[f] ? 'claude_tool_args' : 'not_provided';
+    }
+  }
+
+  console.log('[FEASO] LOG 5 — Final inputs used:', JSON.stringify(finalInputs, null, 2));
+
+  // Step 3: Parse raw strings to numbers
   const parsed = parseAllInputs(finalInputs);
+  console.log('[FEASO] Parsed numeric values:', JSON.stringify(parsed, null, 2));
 
-  console.log('[FEASO-ENGINE] Parsed inputs:', JSON.stringify(parsed, null, 2));
+  // Step 4: FIX 5 — Validate required inputs (refuse to calculate if missing)
+  const validation = validateRequiredInputs(parsed, 'standard');
+  if (!validation.isValid) {
+    console.error('[FEASO] ❌ MISSING REQUIRED INPUTS:', validation.missing);
+    const errorResponse = `I can't run the feasibility yet — I'm missing some required inputs:\n\n${validation.missing.map(f => '• ' + f).join('\n')}\n\nCould you provide ${validation.missing.length === 1 ? 'this value' : 'these values'} so I can crunch the numbers?`;
+    return {
+      formattedResponse: errorResponse,
+      calculationData: { error: true, missing: validation.missing, warnings: validation.warnings },
+      parsedInputs: parsed,
+      inputSources,
+      validationErrors: validation.missing
+    };
+  }
 
-  // Step 4: Calculate
+  if (validation.warnings.length > 0) {
+    console.warn('[FEASO] ⚠️ Input warnings (non-blocking):', validation.warnings);
+  }
+
+  // Step 5: Calculate
   const calc = calculateFeasibility(parsed);
 
-  console.log('[FEASO-ENGINE] Calculation results:');
+  console.log('[FEASO] Calculation results:');
   console.log('  Revenue (inc GST):', calc.revenue.grvInclGST);
   console.log('  Total Cost:', calc.costs.totalProjectCost);
   console.log('  Gross Profit:', calc.profitability.grossProfit);
@@ -963,33 +1118,61 @@ export function runQuickFeasibility(rawInputs, address, conversationHistory) {
   console.log('  Viability:', calc.profitability.viabilityLabel);
   console.log('  Residual Land:', calc.residual.residualLandValue);
 
-  // Step 5: Format
+  // Step 6: Format
   const formattedResponse = formatFeasibilityResponse(calc, address);
 
-  // Also return structured data for PDF/calculator
+  console.log('[FEASO] ====== PIPELINE COMPLETE ======');
+
   return {
     formattedResponse,
     calculationData: calc,
-    parsedInputs: parsed
+    parsedInputs: parsed,
+    inputSources,
+    validationWarnings: validation.warnings
   };
 }
 
 /**
- * Residual land value pipeline
- * Same as above but formats for "I don't know the land price" scenario
+ * Residual land value pipeline (REVISED — same inverted priority)
+ * Used when user doesn't know the land price — calculates max affordable price.
  */
 export function runResidualAnalysis(rawInputs, address, targetMarginOverride, conversationHistory) {
-  // For residual mode, set land to 0 for initial calc, then use residual result
+  console.log('[FEASO] ====== RESIDUAL PIPELINE START ======');
+
+  // Extract from conversation (validation/gap-filler only)
   const conversationInputs = extractInputsFromConversation(conversationHistory);
-  const finalInputs = conversationInputs ? {
-    ...rawInputs,
-    ...conversationInputs,
-    purchasePriceRaw: '0'
-  } : { ...rawInputs, purchasePriceRaw: '0' };
+
+  // Inverted priority: Claude primary, extraction fills gaps
+  const inputFields = ['grvRaw', 'constructionCostRaw', 'lvrRaw',
+    'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw', 'gstCostBaseRaw'];
+
+  let finalInputs = { purchasePriceRaw: '0' }; // Residual mode: land = 0
+  for (const f of inputFields) {
+    if (rawInputs[f]) {
+      finalInputs[f] = rawInputs[f];
+    } else if (conversationInputs && conversationInputs[f]) {
+      finalInputs[f] = conversationInputs[f];
+    }
+  }
 
   const parsed = parseAllInputs(finalInputs);
+
+  // Validate (residual mode — land not required)
+  const validation = validateRequiredInputs(parsed, 'residual');
+  if (!validation.isValid) {
+    console.error('[FEASO] ❌ MISSING REQUIRED INPUTS (residual):', validation.missing);
+    const errorResponse = `I can't calculate the residual land value yet — I'm missing:\n\n${validation.missing.map(f => '• ' + f).join('\n')}\n\nCould you provide ${validation.missing.length === 1 ? 'this value' : 'these values'}?`;
+    return {
+      formattedResponse: errorResponse,
+      calculationData: { error: true, missing: validation.missing },
+      parsedInputs: parsed
+    };
+  }
+
   const calc = calculateFeasibility(parsed);
   const formattedResponse = formatResidualResponse(calc, address, targetMarginOverride);
+
+  console.log('[FEASO] ====== RESIDUAL PIPELINE COMPLETE ======');
 
   return {
     formattedResponse,
