@@ -572,6 +572,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // CONVERSATIONAL: Respond without tools (fast path)
     if (intent === 'conversational') {
       console.log('[CLAUDE] Conversational message - skipping tools');
+      if (sendProgress) sendProgress('💭 Thinking...');
       return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
     }
     
@@ -586,39 +587,42 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       };
     }
     
-    // PROPERTY, ANALYSIS, or UNCLEAR: Proceed with tools
+    // PROPERTY, ANALYSIS, or UNCLEAR: Check if query has specific property identifier
+    console.log('[CLAUDE] Checking for property identifier in query...');
+
+    // Check if query contains actual property identifier
+    const hasPropertyIdentifier = /\d{1,4}\s+[\w\s]+(street|st|avenue|ave|road|rd|drive|dr|parade|pde|court|ct|crescent|cres|place|pl|way|lane|ln)\s*,?\s*\w+|\b\d+[A-Z]{2,4}\d+\b/i.test(userQuery);
+
+    const isGeneralQuestion = /what should i|tell me about|general|planning|area|demographics|style|concept|want to build|thinking about|considering|looking at building|interested in|advice|suggestions|recommendations|possibilities|options/i.test(userQuery.toLowerCase());
+
+    const hasSuburbOnly = /\b(mermaid|broadbeach|surfers|southport|burleigh|palm beach|robina|varsity|currumbin|coolangatta|labrador|runaway bay|hope island|coomera|ormeau|oxenford|helensvale|miami|nobby beach|main beach|ashmore|benowa|bundall|elanora|merrimac|molendinar|mudgeeraba|nerang|paradise point|parkwood|reedy creek|tallebudgera|worongary|carrara|biggera waters|coombabah|gilston|gaven|highland park|hollywell|jacobs well|maudsland|pacific pines|pimpama|stapylton|upper coomera|willow vale|wongawallan|arundel)\b/i.test(userQuery);
+
+    // If general question without specific property, respond conversationally without tools
+    if (isGeneralQuestion && !hasPropertyIdentifier && !conversationContext.lastProperty) {
+      console.log('[CLAUDE] General question without property identifier - using conversational response');
+
+      if (sendProgress) sendProgress('💭 Thinking...');
+
+      return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
+    }
+
     console.log('[CLAUDE] Proceeding with tool-enabled response');
+
+    // Send initial progress message for tool-based queries
+    if (sendProgress) {
+      sendProgress('💭 Analysing your question...');
+    }
 
     const tools = [
       {
         name: 'get_property_info',
-        description: `Look up Gold Coast property planning details (zone, density, height, overlays, planning scheme text).
-
-WHEN TO USE THIS TOOL:
-✅ User FIRST mentions a property address: "I want to talk about 271 Boundary Street Coolangatta"
-✅ User provides lot/plan: "Look up 295RP21863"
-✅ User asks about planning for specific address: "What's the zoning for 123 Main St?"
-✅ User wants to know what can be built at an address
-
-WHEN NOT TO USE THIS TOOL:
-❌ You're ALREADY collecting feasibility inputs (GRV, construction, LVR, timeline, etc.)
-❌ User is answering your question: "The GRV is $10M" or "70% LVR" or "Margin scheme"
-❌ User is choosing mode: "Quick feasibility" or "Detailed calculator"
-❌ General questions without address: "What's typical construction cost?"
-❌ You already looked up this property and have the data in context
-
-CRITICAL RULE FOR FEASIBILITY FLOW:
-- If you're in the middle of asking "What's the GRV?" or "What's the LVR?" → DO NOT USE THIS TOOL
-- If user is providing numbers/answers → DO NOT USE THIS TOOL
-- Only use when FIRST introducing a NEW property address
-
-This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.`,
+        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. ONLY use if user provides a specific address (with street number) or lot/plan number. Do NOT use for general suburb questions like "I want to build in Robina" - those should be answered conversationally. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
         input_schema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
+              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or full street address with number (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable). Do NOT use suburb-only queries.'
             }
           },
           required: ['query']
@@ -626,13 +630,13 @@ This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searche
       },
       {
         name: 'search_development_applications',
-        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
+        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs at a SPECIFIC street address with a number. Do NOT use for general suburb queries. ONLY use when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
         input_schema: {
           type: 'object',
           properties: {
             address: {
               type: 'string',
-              description: 'Full street address including suburb (e.g., "22 Mary Avenue, Broadbeach"). If suburb not provided, use context from conversation.'
+              description: 'Full street address with number including suburb (e.g., "22 Mary Avenue, Broadbeach"). Must have street number. If suburb not provided, use context from conversation.'
             },
             suburb: {
               type: 'string',
@@ -833,6 +837,19 @@ CRITICAL RULES - FIGURES AND DATA:
 - If asked about suburb performance, prices, or market data, say "I don't have current market data for that - you'd want to check recent sales on realestate.com.au or talk to a local agent"
 - You CAN discuss planning controls, zoning, overlays, development potential - these come from official sources
 - You CAN do feasibility calculations with user-provided figures
+
+HANDLING DATA DISPUTES (CRITICAL):
+When a user disputes or questions data you've returned (e.g., "that's not the right area", "the parent site is not X sqm"):
+- NEVER ask the user to provide the correct data as if they should have it
+- You are the expert on Gold Coast property data - the user is asking YOU for information
+- If property data returned is for a strata scheme (GTP/BUP), the area breakdown should show all lots
+- If a user disputes strata area, acknowledge: "Let me check - for strata schemes, the tool queries all lots to calculate total site area. The breakdown shows: [list lot areas]"
+- If there's uncertainty about data accuracy: "I can see from the cadastre that [explain what data shows]. If this doesn't match your records, there may be recent changes or I may have found the wrong lot - can you provide the lot/plan number for verification?"
+- If you genuinely don't have access to certain data: "I can only see [X] from the cadastre database - I don't have visibility of [Y]. Do you have that information?"
+- ADMIT limitations honestly rather than deflecting questions back to the user
+- Example GOOD response: "The cadastre shows lot 0 has 219sqm, but for strata schemes I calculate the total across all lots. Let me verify I have the complete breakdown."
+- Example BAD response: "What is the correct parent site area?" (DO NOT do this - you're the data expert!)
+
 - NEVER assume physical features like "beachfront", "waterfront", "ocean views", "river frontage" etc:
   * Do NOT assume beachfront just because street name contains "Surf", "Marine", "Ocean", "Beach", "Esplanade" etc
   * Do NOT assume waterfront just because of overlays like "Foreshore seawall setback" - these are just regulatory zones
@@ -885,6 +902,9 @@ WRITING STYLE FOR SITE ANALYSIS:
 - ALWAYS include the lot/plan reference in the first sentence for verification
 - When providing site information, use this exact format:
   "The subject site at [address] (Lot [lotplan]) has a Height Control of [X] metres and a Residential Density Classification of [RDX] (one bedroom per [Y] sqm of net site area) which would allow for the notional development of up to [Z] bedrooms (based on the parent site area of [area] square metres)."
+- For STRATA PROPERTIES (GTP/BUP): When areaBreakdown is provided, include it in your response:
+  "The total site area is [total]sqm, comprising: [breakdown of all lots]"
+  Example: "Total site area: 750sqm (comprising Lot 0: 219sqm common property, Lot 1: 257sqm, Lot 2: 274sqm)"
 - After the primary site details, provide relevant constraints and considerations in structured format
 - For casual conversation (greetings, clarifications), remain friendly and conversational
 - Be concise but thorough - prioritize clarity over brevity
@@ -1182,8 +1202,9 @@ ${contextSummary}`;
 
       // Handle property info tool
       if (toolUse.name === 'get_property_info') {
-        if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
-        const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
+        const propertyQuery = toolUse.input.query;
+        if (sendProgress) sendProgress(`📍 Accessing planning controls for ${propertyQuery}...`);
+        const propertyData = await scrapeProperty(propertyQuery, sendProgress);
 
         if (propertyData.needsDisambiguation) {
           console.log('[CLAUDE] Disambiguation needed, asking user...');
@@ -1245,12 +1266,13 @@ ${contextSummary}`;
 
         console.log('[CLAUDE] Property data retrieved');
 
-        if (sendProgress) sendProgress('🧠 Searching planning regulations...');
+        if (sendProgress) sendProgress('✓ Located property - checking zoning controls...');
         console.log('[CLAUDE] Searching planning scheme database...');
         const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
         console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
-        
-        if (sendProgress) sendProgress('✍️ Analyzing development potential...');
+
+        const zoneInfo = propertyData.property?.zone || 'zone';
+        if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays...`);
         
         toolResult = {
           ...propertyData,
@@ -1264,6 +1286,7 @@ ${contextSummary}`;
 
         // Build full address using context if suburb missing
         let searchAddress = toolUse.input.address;
+        if (sendProgress) sendProgress(`🔍 Searching development applications for ${searchAddress}...`);
         const inputSuburb = toolUse.input.suburb;
 
         // Check if address already has a Gold Coast suburb
@@ -1288,7 +1311,10 @@ ${contextSummary}`;
           );
 
           console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-          if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
+          const daCountMsg = daResult.count === 0 ? 'No applications found'
+            : daResult.count === 1 ? '✓ Found 1 development application'
+            : `✓ Found ${daResult.count} development applications`;
+          if (sendProgress) sendProgress(daCountMsg);
 
           toolResult = daResult;
         } catch (daError) {
@@ -1459,7 +1485,8 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
       // Handle start feasibility tool
       else if (toolUse.name === 'start_feasibility') {
         console.log('[CLAUDE] Starting feasibility analysis, mode:', toolUse.input.mode);
-        if (sendProgress) sendProgress('📊 Preparing feasibility analysis...');
+        const feasPropertyAddr = toolUse.input.propertyAddress || conversationContext.lastProperty || 'property';
+        if (sendProgress) sendProgress(`📊 Preparing feasibility analysis for ${feasPropertyAddr}...`);
         
         const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
         
