@@ -368,22 +368,59 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  
+
+  // Track if connection is still open to prevent writing to closed sockets
+  let connectionOpen = true;
+  res.on('close', () => { connectionOpen = false; });
+
+  // Safe sendProgress - won't crash if socket is closed
   const sendProgress = (message) => {
-    res.write(`data: ${JSON.stringify({ type: 'progress', message })}\n\n`);
+    if (!connectionOpen) return;
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'progress', message })}\n\n`);
+    } catch (e) {
+      connectionOpen = false;
+      console.log('[ADVISE-STREAM] Client disconnected during progress write');
+    }
   };
-  
+
+  // Safe write helper
+  const safeWrite = (data) => {
+    if (!connectionOpen) return false;
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      return true;
+    } catch (e) {
+      connectionOpen = false;
+      return false;
+    }
+  };
+
   try {
     const { query, conversationHistory, requestType } = req.body;
-    
-    if (!query) {
-      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Query is required' })}\n\n`);
+
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      safeWrite({ type: 'error', message: 'Query is required' });
       res.end();
       return;
     }
-    
+
+    // Validate conversationHistory if provided
+    let validatedHistory = [];
+    if (conversationHistory) {
+      if (!Array.isArray(conversationHistory)) {
+        console.warn('[ADVISE-STREAM] conversationHistory is not an array, ignoring');
+      } else if (conversationHistory.length > 100) {
+        console.warn('[ADVISE-STREAM] conversationHistory too long (' + conversationHistory.length + '), truncating to last 30');
+        validatedHistory = conversationHistory.slice(-30);
+      } else {
+        validatedHistory = conversationHistory;
+      }
+    }
+
     console.log('[ADVISE-STREAM] Query:', query);
     console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
+    console.log('[ADVISE-STREAM] History length:', validatedHistory.length);
 
     if (requestType === 'overlays-only') {
       console.log('[ADVISE-STREAM] Overlay-only mode activated');
@@ -438,29 +475,34 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
       type: 'complete', 
       data: response,
       timestamp: new Date().toISOString()
-    })}\n\n`);
-    
+    });
+
     res.end();
-    
+
   } catch (error) {
     console.error('[ADVISE-STREAM ERROR]', error.message);
-    
-    const isOverloaded = error.message?.includes('529') || 
+
+    if (!connectionOpen) {
+      console.log('[ADVISE-STREAM] Client disconnected before error could be sent');
+      return;
+    }
+
+    const isOverloaded = error.message?.includes('529') ||
                          error.message?.includes('overloaded') ||
                          error.message?.includes('Overloaded');
-    
+
     if (isOverloaded) {
-      res.write(`data: ${JSON.stringify({ 
-        type: 'error', 
-        message: "Dev.i's server is overloaded. Please ask your question again." 
-      })}\n\n`);
+      safeWrite({
+        type: 'error',
+        message: "Dev.i's server is overloaded. Please ask your question again."
+      });
     } else {
-      res.write(`data: ${JSON.stringify({ 
-        type: 'error', 
-        message: error.message 
-      })}\n\n`);
+      safeWrite({
+        type: 'error',
+        message: 'Something went wrong processing your request. Please try again.'
+      });
     }
-    
+
     res.end();
   }
 });
