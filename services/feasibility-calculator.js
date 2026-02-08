@@ -23,15 +23,17 @@ const QUICK_DEFAULTS = {
   professionalFeesPercent: 8,
   statutoryFeesPercent: 2,
   projectManagementPercent: 3,
-  agentFeesPercent: 2.5,
-  marketingPercent: 1.5,
-  legalSellingPercent: 0.5,
-  interestRate: 7.0,
+  agentFeesPercent: 1.5,
+  marketingPercent: 1.2,
+  legalSellingPercent: 0.3,
+  interestRate: 6.75,
   loanLVR: 65,
   leadInMonths: 6,
   constructionMonthsPerStorey: 4,
   sellingMonthsPerUnit: 1.5,
   stampDutyRate: 0.055, // Approximate QLD rate for investment
+  councilRatesAnnual: 5000,
+  waterRatesAnnual: 1400,
 };
 
 /**
@@ -43,6 +45,61 @@ function calculateStampDutyQLD(price) {
   if (price <= 540000) return 1125 + (price - 75000) * 0.035;
   if (price <= 1000000) return 17400 + (price - 540000) * 0.045;
   return 38100 + (price - 1000000) * 0.0575;
+}
+
+/**
+ * Calculate land tax for QLD (Companies/Trusts)
+ * Updated to current QRO rates (2025-26):
+ * - Under $350k: $0
+ * - $350k - $2.25M: $1,450 + 1.7% of amount over $350k
+ * - $2.25M - $5M: $33,750 + 1.5% of amount over $2.25M
+ * - Over $5M: $75,000 + 2.0% of amount over $5M
+ */
+export function calculateLandTaxQLD(landValue) {
+  if (landValue < 350000) return 0;
+  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
+  return 75000 + (landValue - 5000000) * 0.02;
+}
+
+/**
+ * Calculate target margin based on GRV
+ * - GRV under $15M → assume 15%
+ * - GRV $15M or above → assume 20%
+ */
+export function calculateTargetMargin(grvExclGST) {
+  return grvExclGST < 15000000 ? 15 : 20;
+}
+
+/**
+ * Split total timeline into phases
+ * - Lead-in: ~17% of total
+ * - Construction: ~67% of total
+ * - Selling: ~16% of total
+ */
+export function splitTimeline(totalMonths) {
+  const leadInMonths = Math.round(totalMonths * 0.17);
+  const constructionMonths = Math.round(totalMonths * 0.67);
+  const sellingMonths = totalMonths - leadInMonths - constructionMonths;
+
+  return {
+    leadInMonths,
+    constructionMonths,
+    sellingMonths,
+    totalMonths
+  };
+}
+
+/**
+ * Get default selling costs breakdown (total 3%)
+ */
+export function getDefaultSellingCosts() {
+  return {
+    agentFeesPercent: 1.5,
+    marketingPercent: 1.2,
+    legalSellingPercent: 0.3,
+    totalPercent: 3.0
+  };
 }
 
 /**

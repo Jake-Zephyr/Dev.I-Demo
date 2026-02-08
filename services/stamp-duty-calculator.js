@@ -10,11 +10,12 @@ export function calculateStampDuty(input) {
   const warnings = [];
 
   if (state === 'QLD') {
+    // QLD transfer duty rates (2025-26) - Source: QLD Revenue Office
     if (propertyValue <= 5000) baseDuty = 0;
     else if (propertyValue <= 75000) baseDuty = (propertyValue - 5000) * 0.015;
-    else if (propertyValue <= 540000) baseDuty = 1050 + (propertyValue - 75000) * 0.035;
-    else if (propertyValue <= 1000000) baseDuty = 17325 + (propertyValue - 540000) * 0.045;
-    else baseDuty = 38025 + (propertyValue - 1000000) * 0.0575;
+    else if (propertyValue <= 540000) baseDuty = 1125 + (propertyValue - 75000) * 0.035;
+    else if (propertyValue <= 1000000) baseDuty = 17400 + (propertyValue - 540000) * 0.045;
+    else baseDuty = 38100 + (propertyValue - 1000000) * 0.0575;
     
     if (isFirstHomeBuyer && isNewHome && useType === 'owner_occupied') {
       concessionsApplied.push({ code: 'QLD_FHB', amount: -baseDuty, label: 'First Home Buyer Exemption' });

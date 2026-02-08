@@ -2,6 +2,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
+import { getDetailedFeasibilityPreFill } from './feasibility-calculator.js';
+import { runQuickFeasibility, runResidualAnalysis } from './quick-feasibility-engine.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -65,41 +67,63 @@ function fixBulletPoints(text) {
 
 /**
  * Force paragraph breaks every 2-3 sentences
+ * ONLY applies to plain prose paragraphs. Preserves:
+ * - Bullet point lists (lines starting with • or -)
+ * - Numbered lists
+ * - Lines with colons (headers/labels like "Revenue:")
+ * - Feasibility output (structured data)
+ * - Existing paragraph breaks
  */
 function formatIntoParagraphs(text) {
   if (!text) return text;
-  
+
+  // If text already has structure (bullets, multiple newlines, headers), preserve it
+  const hasBullets = /^[•\-]\s/m.test(text);
+  const hasHeaders = /^[A-Z][A-Za-z\s]+:/m.test(text);
+  const hasMultipleParagraphs = (text.match(/\n\n/g) || []).length >= 2;
+
+  if (hasBullets || hasHeaders || hasMultipleParagraphs) {
+    // Already structured — just clean up excessive whitespace
+    return text.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Plain prose: split into sentences and group into paragraphs
   let normalized = text.replace(/\n+/g, ' ').replace(/  +/g, ' ').trim();
-  
+
+  // Common abbreviations that shouldn't trigger sentence splits
+  const abbrevs = /(?:Dr|Mr|Mrs|Ms|Prof|St|Ave|Rd|Ltd|Inc|Corp|etc|vs|approx|e\.g|i\.e)\./gi;
+  // Temporarily replace abbreviation dots
+  let temp = normalized.replace(abbrevs, (match) => match.replace('.', '§DOT§'));
+
   const sentences = [];
   let current = '';
-  
-  for (let i = 0; i < normalized.length; i++) {
-    current += normalized[i];
-    
-    if (normalized[i] === '.' && 
-        (i === normalized.length - 1 || 
-         (normalized[i + 1] === ' ' && /[A-Z]/.test(normalized[i + 2] || '')))) {
-      sentences.push(current.trim());
+
+  for (let i = 0; i < temp.length; i++) {
+    current += temp[i];
+
+    if (temp[i] === '.' &&
+        (i === temp.length - 1 ||
+         (temp[i + 1] === ' ' && /[A-Z]/.test(temp[i + 2] || '')))) {
+      sentences.push(current.trim().replace(/§DOT§/g, '.'));
       current = '';
-      i++;
+      i++; // skip the space
     }
   }
-  
+
   if (current.trim()) {
-    sentences.push(current.trim());
+    sentences.push(current.trim().replace(/§DOT§/g, '.'));
   }
-  
+
   if (sentences.length <= 3) {
     return sentences.join(' ');
   }
-  
+
   const paragraphs = [];
   for (let i = 0; i < sentences.length; i += 3) {
     const group = sentences.slice(i, i + 3);
     paragraphs.push(group.join(' '));
   }
-  
+
   return paragraphs.join('\n\n');
 }
 
@@ -122,23 +146,81 @@ function extractConversationContext(conversationHistory) {
     priceDiscussed: null,
     budgetRange: null
   };
-  
+
   if (!conversationHistory || conversationHistory.length === 0) {
     return context;
   }
-  
+
+  // Track which individual planning controls have been set from City Plan (get_property_info)
+  // Only lock fields that were actually found — don't block others from fallback extraction
+  let zoneLocked = false;
+  let densityLocked = false;
+  let heightLocked = false;
+
   // Scan through history looking for property data and strategy signals
   for (const msg of conversationHistory) {
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
     const contentLower = content.toLowerCase();
-    
-    // Look for property addresses
-    const addressMatch = content.match(/(\d+\s+[\w\s]+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln)),?\s*([\w\s]+?)(?:,|\s+QLD|\s+\d{4}|$)/i);
-    if (addressMatch) {
+
+    // CRITICAL: Extract planning controls ONLY from get_property_info tool results
+    // This prevents DA documents from contaminating City Plan data
+    if (msg.role === 'user' && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          try {
+            const toolResultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+
+            // Check if this looks like a property lookup result (must have both markers)
+            if (toolResultText.includes('"success":true') && toolResultText.includes('"property":{')) {
+              const toolResult = JSON.parse(toolResultText);
+
+              if (toolResult.success && toolResult.property) {
+                const prop = toolResult.property;
+
+                // Set planning controls per-field (from City Plan - IMMUTABLE once set)
+                if (prop.zone) {
+                  context.lastZone = prop.zone;
+                  zoneLocked = true;
+                }
+                if (prop.density) {
+                  context.lastDensity = prop.density;
+                  densityLocked = true;
+                }
+                if (prop.height) {
+                  context.lastHeight = prop.height;
+                  heightLocked = true;
+                }
+
+                // Always update property info from tool results (latest wins)
+                if (prop.address) {
+                  context.lastProperty = prop.address;
+                }
+                if (prop.lotplan) {
+                  context.lastLotplan = prop.lotplan;
+                }
+                if (prop.area) {
+                  const areaNum = parseInt(prop.area.replace(/[^\d]/g, ''));
+                  if (!isNaN(areaNum)) {
+                    context.lastSiteArea = areaNum;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.log('[CONTEXT] Tool result parse skipped (not JSON or not property result)');
+          }
+        }
+      }
+    }
+
+    // Look for property addresses (fallback for user-mentioned addresses)
+    // Updated regex: require at least one word before street type, limit capture width
+    const addressMatch = content.match(/(\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\s+(?:street|st|avenue|ave|court|crt|road|rd|drive|dr|parade|pde|circuit|cct|crescent|cres|place|pl|way|lane|ln|terrace|tce|boulevard|blvd|esplanade|esp)),?\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)(?:,|\s+QLD|\s+\d{4}|$)/i);
+    if (addressMatch && !context.lastProperty) {
       context.lastProperty = addressMatch[0].trim();
       context.lastSuburb = addressMatch[2]?.trim();
     }
-    
+
     // Look for suburbs mentioned
     const suburbPatterns = [
       'mermaid waters', 'mermaid beach', 'broadbeach', 'surfers paradise',
@@ -151,31 +233,42 @@ function extractConversationContext(conversationHistory) {
         context.lastSuburb = suburb.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
       }
     }
-    
-    // Look for lotplan
+
+    // Look for lotplan (fallback)
     const lotplanMatch = content.match(/\b(\d+[A-Z]{2,4}\d+)\b/i);
-    if (lotplanMatch) {
+    if (lotplanMatch && !context.lastLotplan) {
       context.lastLotplan = lotplanMatch[1].toUpperCase();
     }
-    
-    // Look for site area
-    const areaMatch = content.match(/(\d+)\s*(?:sqm|m2|square\s*met)/i);
-    if (areaMatch) {
-      context.lastSiteArea = parseInt(areaMatch[1]);
+
+    // Look for site area (fallback, only if not already set by property lookup)
+    // Support decimal areas like "1500.5 sqm"
+    if (!context.lastSiteArea) {
+      const areaMatch = content.match(/([\d,.]+)\s*(?:sqm|m2|m²|square\s*met)/i);
+      if (areaMatch) {
+        const parsed = parseFloat(areaMatch[1].replace(/,/g, ''));
+        if (!isNaN(parsed) && parsed > 0) {
+          context.lastSiteArea = Math.round(parsed);
+        }
+      }
     }
-    
-    // Look for density codes
-    const densityMatch = content.match(/\b(RD[1-8])\b/i);
-    if (densityMatch) {
-      context.lastDensity = densityMatch[1].toUpperCase();
+
+    // CRITICAL: DO NOT extract density codes or height limits from general text
+    // These MUST come from get_property_info to avoid contamination from DA documents
+    // Only extract if the SPECIFIC field hasn't been locked by City Plan data
+    if (!densityLocked) {
+      const densityMatch = content.match(/\b(RD\d{1,2})\b/i);
+      if (densityMatch && !context.lastDensity) {
+        context.lastDensity = densityMatch[1].toUpperCase();
+      }
     }
-    
-    // Look for height
-    const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*height/i);
-    if (heightMatch) {
-      context.lastHeight = `${heightMatch[1]}m`;
+
+    if (!heightLocked) {
+      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*(?:height|tall)/i);
+      if (heightMatch && !context.lastHeight) {
+        context.lastHeight = `${heightMatch[1]}m`;
+      }
     }
-    
+
     // Detect development strategy from conversation
     if (contentLower.includes('renovate') || contentLower.includes('renovation') || contentLower.includes('update')) {
       context.developmentStrategy = 'renovation';
@@ -186,33 +279,109 @@ function extractConversationContext(conversationHistory) {
     if (contentLower.includes('subdivide') || contentLower.includes('subdivision')) {
       context.developmentStrategy = 'subdivision';
     }
-    
+
     // Detect existing units
     const unitsMatch = content.match(/(\d+)\s*(?:existing\s*)?units?|already\s*(?:has\s*)?(\d+)\s*units?|strata.*?(\d+)\s*units?/i);
     if (unitsMatch) {
       context.existingUnits = parseInt(unitsMatch[1] || unitsMatch[2] || unitsMatch[3]);
     }
-    
+
     // Look for "4 units" or "subdivided into X units"
     const strataUnitsMatch = content.match(/(?:subdivided|split|divided)\s*into\s*(\d+)\s*(?:strata\s*)?units?/i);
     if (strataUnitsMatch) {
       context.existingUnits = parseInt(strataUnitsMatch[1]);
       context.isStrata = true;
     }
-    
+
     // Detect strata
     if (contentLower.includes('strata') || contentLower.includes('body corp')) {
       context.isStrata = true;
     }
-    
+
     // Look for budget/price discussions
     const priceMatch = content.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:m(?:illion)?|k)?/gi);
     if (priceMatch) {
       context.priceDiscussed = priceMatch[priceMatch.length - 1]; // Most recent price
     }
   }
-  
+
   return context;
+}
+
+/**
+ * Detect and parse button options from Claude's response
+ * Looks for patterns like "[Option 1] [Option 2] [Option 3]"
+ * Returns array of button options if found, null otherwise
+ */
+function parseButtonOptions(text) {
+  if (!text) return null;
+
+  // Extract ALL [bracketed] options from the text
+  // Supports single buttons and multi-button groups
+  const allButtons = [];
+  const individualPattern = /\[([^\]]+)\]/g;
+  let match;
+
+  while ((match = individualPattern.exec(text)) !== null) {
+    const buttonText = match[1].trim();
+    // Filter out markdown-style links like [text](url) and common false positives
+    if (buttonText &&
+        !allButtons.includes(buttonText) &&
+        !text.substring(match.index + match[0].length).startsWith('(') && // not a markdown link
+        buttonText.length < 60) { // reasonable button text length
+      allButtons.push(buttonText);
+    }
+  }
+
+  // Need at least 2 buttons to be meaningful (single bracket is likely not a button)
+  return allButtons.length >= 2 ? allButtons : null;
+}
+
+/**
+ * Determine the question type/context for button options
+ * This helps the frontend show appropriate follow-up inputs
+ */
+function detectQuestionContext(text, buttons) {
+  if (!text || !buttons) return null;
+
+  const lowerText = text.toLowerCase();
+
+  // Detect question type based on content
+  if (lowerText.includes('lvr') || lowerText.includes('loan to value')) {
+    return { type: 'lvr', label: 'LVR (Loan to Value Ratio)' };
+  }
+  if (lowerText.includes('interest rate')) {
+    return { type: 'interest_rate', label: 'Interest Rate', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('selling cost')) {
+    return { type: 'selling_costs', label: 'Selling Costs', needsCustomInput: buttons.includes('Custom') };
+  }
+  if (lowerText.includes('gst') && (lowerText.includes('scheme') || lowerText.includes('treatment'))) {
+    return {
+      type: 'gst_scheme',
+      label: 'GST Treatment',
+      needsFollowUp: buttons.some(b => b.toLowerCase().includes('margin'))
+    };
+  }
+  if (lowerText.includes('project type') || lowerText.includes('type of project')) {
+    return { type: 'project_type', label: 'Project Type' };
+  }
+  if (lowerText.includes('cost base') && (lowerText.includes('margin scheme') || lowerText.includes('gst'))) {
+    return {
+      type: 'gst_cost_base',
+      label: 'GST Margin Scheme Cost Base',
+      needsCustomInput: buttons.some(b => b.toLowerCase().includes('different'))
+    };
+  }
+  if ((lowerText.includes('quick') && lowerText.includes('detailed')) ||
+      (lowerText.includes('feaso') && lowerText.includes('calculator'))) {
+    return {
+      type: 'feasibility_mode',
+      label: 'Feasibility Mode Selection'
+    };
+  }
+
+  return { type: 'general', label: 'Select an option' };
 }
 
 /**
@@ -316,15 +485,16 @@ function classifyIntent(query, conversationContext) {
  */
 async function handleConversationalMessage(userQuery, conversationHistory, context) {
   const messages = [];
-  
+
   // Add recent history (last 10 messages max for context)
+  // Only include string content — skip tool_result blocks for conversational responses
   if (conversationHistory?.length > 0) {
     const recent = conversationHistory.slice(-10);
     for (const msg of recent) {
-      if (msg.content) {
+      if (msg.content && typeof msg.content === 'string' && msg.content.trim()) {
         messages.push({
           role: msg.role,
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          content: msg.content.trim()
         });
       }
     }
@@ -402,6 +572,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
     // CONVERSATIONAL: Respond without tools (fast path)
     if (intent === 'conversational') {
       console.log('[CLAUDE] Conversational message - skipping tools');
+      if (sendProgress) sendProgress('💭 Thinking...');
       return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
     }
     
@@ -416,19 +587,42 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       };
     }
     
-    // PROPERTY, ANALYSIS, or UNCLEAR: Proceed with tools
+    // PROPERTY, ANALYSIS, or UNCLEAR: Check if query has specific property identifier
+    console.log('[CLAUDE] Checking for property identifier in query...');
+
+    // Check if query contains actual property identifier
+    const hasPropertyIdentifier = /\d{1,4}\s+[\w\s]+(street|st|avenue|ave|road|rd|drive|dr|parade|pde|court|ct|crescent|cres|place|pl|way|lane|ln)\s*,?\s*\w+|\b\d+[A-Z]{2,4}\d+\b/i.test(userQuery);
+
+    const isGeneralQuestion = /what should i|tell me about|general|planning|area|demographics|style|concept|want to build|thinking about|considering|looking at building|interested in|advice|suggestions|recommendations|possibilities|options/i.test(userQuery.toLowerCase());
+
+    const hasSuburbOnly = /\b(mermaid|broadbeach|surfers|southport|burleigh|palm beach|robina|varsity|currumbin|coolangatta|labrador|runaway bay|hope island|coomera|ormeau|oxenford|helensvale|miami|nobby beach|main beach|ashmore|benowa|bundall|elanora|merrimac|molendinar|mudgeeraba|nerang|paradise point|parkwood|reedy creek|tallebudgera|worongary|carrara|biggera waters|coombabah|gilston|gaven|highland park|hollywell|jacobs well|maudsland|pacific pines|pimpama|stapylton|upper coomera|willow vale|wongawallan|arundel)\b/i.test(userQuery);
+
+    // If general question without specific property, respond conversationally without tools
+    if (isGeneralQuestion && !hasPropertyIdentifier && !conversationContext.lastProperty) {
+      console.log('[CLAUDE] General question without property identifier - using conversational response');
+
+      if (sendProgress) sendProgress('💭 Thinking...');
+
+      return await handleConversationalMessage(userQuery, conversationHistory, conversationContext);
+    }
+
     console.log('[CLAUDE] Proceeding with tool-enabled response');
+
+    // Send initial progress message for tool-based queries
+    if (sendProgress) {
+      sendProgress('💭 Analysing your question...');
+    }
 
     const tools = [
       {
         name: 'get_property_info',
-        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. Use this for zoning questions, planning controls, what can be built, overlay information. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
+        description: 'Look up current Gold Coast property planning details including zone, density, height limits, overlays, and relevant planning scheme text. ONLY use if user provides a specific address (with street number) or lot/plan number. Do NOT use for general suburb questions like "I want to build in Robina" - those should be answered conversationally. IMPORTANT: This tool works best with lot/plan numbers (e.g., "295RP21863"). Address searches can be unreliable.',
         input_schema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or street address (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable)'
+              description: 'Lot/plan number (e.g., "295RP21863" - PREFERRED) or full street address with number (e.g., "12 Heron Avenue, Mermaid Beach" - less reliable). Do NOT use suburb-only queries.'
             }
           },
           required: ['query']
@@ -436,13 +630,13 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'search_development_applications',
-        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
+        description: 'Search for development applications (DAs) at a specific Gold Coast address. ONLY use this when user asks about DAs at a SPECIFIC street address with a number. Do NOT use for general suburb queries. ONLY use when user asks about DAs, development applications, building approvals, or construction activity. Returns application numbers, lodgement dates, status, descriptions, and types.',
         input_schema: {
           type: 'object',
           properties: {
             address: {
               type: 'string',
-              description: 'Full street address including suburb (e.g., "22 Mary Avenue, Broadbeach"). If suburb not provided, use context from conversation.'
+              description: 'Full street address with number including suburb (e.g., "22 Mary Avenue, Broadbeach"). Must have street number. If suburb not provided, use context from conversation.'
             },
             suburb: {
               type: 'string',
@@ -459,7 +653,7 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
         name: 'get_da_decision_notice',
-        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available).',
+        description: 'Download and analyze the decision notice PDF for a specific development application. Use when user selects a DA from search results and wants to see the decision notice, conditions, or approval details. This tool searches through all document pages to find the signed decision notice (or falls back to unsigned if not available). CRITICAL: DA approvals show what was approved for a SPECIFIC APPLICATION - they do NOT change the underlying planning scheme controls (zone, height, density). Never say "the site\'s height limit is 45m" if 45m came from a DA approval - the actual planning control might be HX.',
         input_schema: {
           type: 'object',
           properties: {
@@ -557,83 +751,28 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
       },
       {
   name: 'calculate_quick_feasibility',
-  description: 'Calculate a quick feasibility analysis. ONLY use after collecting ALL required inputs from user: project type, units/sizes, GRV, construction cost, LVR, interest rate, timeline, selling costs, GST scheme. DO NOT call this tool until you have asked for and received all inputs.',
+  description: `Calculate a quick feasibility. Pass EXACTLY what the user typed as raw strings. The backend handles ALL parsing and calculation. You will receive a pre-formatted response to display VERBATIM.
+
+CRITICAL: Copy the user's EXACT words into the Raw fields. Do NOT convert numbers.
+Example: User said "$10M" → purchasePriceRaw: "$10M" (not 10000000)
+Example: User said "$45m" → grvRaw: "$45m" (not 45000000)
+Example: User said "80%" → lvrRaw: "80%" (not 80)`,
   input_schema: {
     type: 'object',
     properties: {
-      propertyAddress: {
-        type: 'string',
-        description: 'Property address'
-      },
-      siteArea: {
-        type: 'number',
-        description: 'Site area in sqm'
-      },
-      projectType: {
-        type: 'string',
-        enum: ['new_build', 'knockdown_rebuild', 'renovation'],
-        description: 'Type of project'
-      },
-      numUnits: {
-        type: 'number',
-        description: 'Number of units'
-      },
-      unitMix: {
-        type: 'string',
-        description: 'Description of unit sizes, e.g. "4 x 150sqm" or "3 x 200sqm + 1 x 300sqm penthouse"'
-      },
-      saleableArea: {
-        type: 'number',
-        description: 'Total saleable area (NSA) in sqm - calculate from unit mix'
-      },
-      grvTotal: {
-        type: 'number',
-        description: 'Gross Realisation Value - total sales revenue including GST'
-      },
-      grvMethod: {
-        type: 'string',
-        enum: ['per_sqm', 'per_unit', 'total'],
-        description: 'How user provided GRV'
-      },
-      landValue: {
-        type: 'number',
-        description: 'Land/property purchase price'
-      },
-      constructionCost: {
-        type: 'number',
-        description: 'Total construction cost - MUST be provided by user, never assumed'
-      },
-      contingencyIncluded: {
-        type: 'boolean',
-        description: 'Whether contingency is included in construction cost'
-      },
-      lvr: {
-        type: 'number',
-        description: 'Loan to Value Ratio as percentage (70 = 70%, 100 = fully funded)'
-      },
-      interestRate: {
-        type: 'number',
-        description: 'Interest rate as percentage (6.75 = 6.75%)'
-      },
-      timelineMonths: {
-        type: 'number',
-        description: 'Total project timeline in months'
-      },
-      sellingCostsPercent: {
-        type: 'number',
-        description: 'Selling costs as percentage (3 = 3%)'
-      },
-      gstScheme: {
-        type: 'string',
-        enum: ['margin', 'fully_taxed'],
-        description: 'GST treatment - margin scheme or fully taxed'
-      },
-      targetMarginPercent: {
-        type: 'number',
-        description: 'Target profit margin percentage (default 20)'
-      }
+      propertyAddress: { type: 'string', description: 'Property address from conversation context' },
+      purchasePriceRaw: { type: 'string', description: 'EXACT user input for purchase price. e.g. "$10M", "$5,000,000", "5 million"' },
+      grvRaw: { type: 'string', description: 'EXACT user input for GRV. e.g. "$45M", "$12,333,333", "70 million"' },
+      constructionCostRaw: { type: 'string', description: 'EXACT user input for construction cost. e.g. "$10M", "$10,000,000"' },
+      lvrRaw: { type: 'string', description: 'EXACT user input for LVR (debt percentage). e.g. "80%", "70", "100% debt", "no debt", "fully funded". If user says "100%" or "fully funded 100%" pass exactly that. If user says "no debt" or "cash" pass that.' },
+      interestRateRaw: { type: 'string', description: 'EXACT user input for interest rate. e.g. "8.5", "7.0%", "6.5 percent"' },
+      timelineRaw: { type: 'string', description: 'EXACT user input for timeline. e.g. "18", "24 months", "2 years"' },
+      sellingCostsRaw: { type: 'string', description: 'EXACT user input for selling costs. e.g. "3%", "4"' },
+      gstSchemeRaw: { type: 'string', description: 'EXACT user input for GST. e.g. "margin scheme", "fully taxed"' },
+      gstCostBaseRaw: { type: 'string', description: 'EXACT user input for GST cost base. e.g. "same as acquisition", "$5M"' },
+      mode: { type: 'string', enum: ['standard', 'residual'], description: 'standard = full feasibility with land price. residual = calculate max land price.' }
     },
-    required: ['numUnits', 'saleableArea', 'grvTotal', 'constructionCost', 'lvr', 'interestRate', 'timelineMonths', 'sellingCostsPercent', 'gstScheme']
+    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw']
   }
 }
     ];
@@ -676,6 +815,19 @@ CRITICAL RULES - FIGURES AND DATA:
 - If asked about suburb performance, prices, or market data, say "I don't have current market data for that - you'd want to check recent sales on realestate.com.au or talk to a local agent"
 - You CAN discuss planning controls, zoning, overlays, development potential - these come from official sources
 - You CAN do feasibility calculations with user-provided figures
+
+HANDLING DATA DISPUTES (CRITICAL):
+When a user disputes or questions data you've returned (e.g., "that's not the right area", "the parent site is not X sqm"):
+- NEVER ask the user to provide the correct data as if they should have it
+- You are the expert on Gold Coast property data - the user is asking YOU for information
+- If property data returned is for a strata scheme (GTP/BUP), the area breakdown should show all lots
+- If a user disputes strata area, acknowledge: "Let me check - for strata schemes, the tool queries all lots to calculate total site area. The breakdown shows: [list lot areas]"
+- If there's uncertainty about data accuracy: "I can see from the cadastre that [explain what data shows]. If this doesn't match your records, there may be recent changes or I may have found the wrong lot - can you provide the lot/plan number for verification?"
+- If you genuinely don't have access to certain data: "I can only see [X] from the cadastre database - I don't have visibility of [Y]. Do you have that information?"
+- ADMIT limitations honestly rather than deflecting questions back to the user
+- Example GOOD response: "The cadastre shows lot 0 has 219sqm, but for strata schemes I calculate the total across all lots. Let me verify I have the complete breakdown."
+- Example BAD response: "What is the correct parent site area?" (DO NOT do this - you're the data expert!)
+
 - NEVER assume physical features like "beachfront", "waterfront", "ocean views", "river frontage" etc:
   * Do NOT assume beachfront just because street name contains "Surf", "Marine", "Ocean", "Beach", "Esplanade" etc
   * Do NOT assume waterfront just because of overlays like "Foreshore seawall setback" - these are just regulatory zones
@@ -687,6 +839,33 @@ CRITICAL RULES - FIGURES AND DATA:
   * Renovation/refurb: $1,000-$3,000/sqm
   * High-end fitout: $4,500-$10,000/sqm
   * ALWAYS say "Based on industry estimates - get a QS quote or check Rawlinsons for accurate costs"
+
+CRITICAL: PLANNING CONTROLS VS DA APPROVALS - DATA SOURCE PRECEDENCE
+=======================================================================
+PLANNING SCHEME CONTROLS (Zone, Height, Density, Overlays):
+- ONLY come from get_property_info tool (queries Gold Coast City Plan)
+- These are the UNDERLYING PLANNING RULES that apply to the land
+- Examples: "HX height control", "RD8 density", "Medium density residential zone"
+- NEVER override or change these based on DA documents
+
+DA DECISION NOTICES (Development Approvals):
+- Show what was APPROVED for a SPECIFIC APPLICATION
+- Examples: "Approved for 45m building height", "59 units approved"
+- These are project-specific, NOT planning scheme controls
+- A DA approving "45m height" does NOT mean the planning scheme control is "45m"
+- The planning scheme might say "HX", and the DA approved a variation to 45m via impact assessment
+
+CORRECT PHRASING:
+✓ "The site has an HX height control under the City Plan. The DA (MCU/2024/456) approved a 45-metre building via impact assessment."
+✓ "Planning scheme allows HX height. Previous DA achieved 45m approval."
+✓ "City Plan control: HX height limit. DA approval: 45m building (exceeded via impact assessment)."
+
+INCORRECT PHRASING (NEVER SAY THIS):
+✗ "The site's 45m height limit" (when 45m came from a DA, not City Plan)
+✗ "Height control is 45 metres" (when it's actually HX, and 45m was a DA approval)
+✗ Using DA-approved specs as if they're planning scheme controls
+
+RULE: Always distinguish between "what the planning scheme allows" vs "what a previous DA approved"
 
 PLANNING FLEXIBILITY - CODE VS IMPACT ASSESSABLE:
 - If a proposal EXCEEDS planning scheme limits (density, height, setbacks etc), DO NOT say "you can't do this"
@@ -717,6 +896,9 @@ WRITING STYLE FOR SITE ANALYSIS:
 - ALWAYS include the lot/plan reference in the first sentence for verification
 - When providing site information, use this exact format:
   "The subject site at [address] (Lot [lotplan]) has a Height Control of [X] metres and a Residential Density Classification of [RDX] (one bedroom per [Y] sqm of net site area) which would allow for the notional development of up to [Z] bedrooms (based on the parent site area of [area] square metres)."
+- For STRATA PROPERTIES (GTP/BUP): When areaBreakdown is provided, include it in your response:
+  "The total site area is [total]sqm, comprising: [breakdown of all lots]"
+  Example: "Total site area: 750sqm (comprising Lot 0: 219sqm common property, Lot 1: 257sqm, Lot 2: 274sqm)"
 - After the primary site details, provide relevant constraints and considerations in structured format
 - For casual conversation (greetings, clarifications), remain friendly and conversational
 - Be concise but thorough - prioritize clarity over brevity
@@ -813,7 +995,7 @@ HANDLING AMBIGUOUS RESPONSES:
 - Example: Asked "Quick or detailed?" and user says "yes" → ask them to pick one
 
 FEASIBILITY RULES:
-- ALWAYS ask "Quick feaso or detailed calculator?" first - use mode="selection"
+- ALWAYS ask "Quick feaso or detailed calculator? [Quick] [Detailed]" with buttons - use mode="selection"
 - Only proceed to quick/detailed after user EXPLICITLY chooses
 - If conversation was about RENOVATION, set developmentType="renovation" and isRenovation=true
 - For renovation: construction costs are ~$1000-$3000/sqm
@@ -839,69 +1021,148 @@ ${contextSummary}
 QUICK FEASIBILITY FLOW:
 When user chooses quick feasibility, collect inputs step by step. NEVER assume values for these critical inputs - ALWAYS ask (in no particular order, dont be rigid with the  structure, keep conversation):
 
-Step 1: Project type (if not already known)
-"What type of project? [New build] [Knockdown rebuild] [Renovation]"
+Step 1: Purchase price / Land value
+"What's the site acquisition cost (purchase price)? For example: '$5M' or '$2,500/sqm'"
 
-Step 2: Unit count and sizes
-"How many units and what sizes? E.g. '4 units at 150sqm each' or '3 x 200sqm + 1 x 300sqm penthouse'"
+ACCEPTING USER VARIATIONS:
+- "$5M" / "$5,000,000" / "5 million" → Accept as land value
+- "$2,500/sqm" → Need site area to calculate (from property lookup)
+- "I already own it" / "already purchased" → Ask: "What was the purchase price?"
+- If user doesn't know: Use residual land value approach (calculate after getting other inputs)
 
-Step 3: GRV (Gross Realisation Value)
-"What's your target sale price? [$/sqm rate] [$ per unit] [$ total GRV]"
+Step 2: GRV (Gross Realisation Value)
+"What's your target gross revenue (GRV)? For example: '$10M total' or '$5,000/sqm'"
 
-Step 4: Construction cost - NEVER ASSUME THIS
+CRITICAL - USER CAN SKIP UNIT MIX:
+- If user provides total GRV (e.g., "$10M"), you don't need unit count or sizes
+- Only ask for unit mix if user provides $/sqm rate (you'll need saleable area to calculate total)
+- For the calculation tool:
+  * If total GRV provided: use numUnits = 1, saleableArea = 1, grvTotal = their amount
+  * If $/sqm provided: ask for saleable area, then calculate grvTotal = rate × area
+
+Step 3: Construction cost - NEVER ASSUME THIS
 "What's your total construction cost including professional fees, statutory fees, and contingency?"
-DO NOT suggest a $/sqm rate unless user explictly asks for market rates. Wait for user to provide their number.
+DO NOT suggest a $/sqm rate unless user explicitly asks for market rates. Wait for user to provide their number.
 
-Step 5: Finance inputs
-"Finance details:
-- LVR? [60%] [70%] [80%] [Fully funded]
-- Interest rate?
-- Project timeline in months?"
+CRITICAL - HANDLING GROSS VS NET FLOOR AREA:
+- If user says they're building at "$8k/sqm on gross not net", they mean:
+  * Gross floor area INCLUDES common areas, lifts, basement, circulation (typically 25-35% of total)
+  * Net saleable area is SMALLER than gross (usually 65-75% of gross)
+- Ask: "So construction is $X per sqm of GROSS floor area. What's the total gross floor area including common areas?"
+- Then calculate: Construction cost = gross floor area × $/sqm rate
+- NEVER multiply net saleable area by a gross $/sqm rate - that's wrong!
 
-Step 6: Other costs
-"- Selling costs (agent + marketing)? [3%] [4%] [Custom]
-- GST treatment? [Margin scheme] [Fully taxed]"
-multiple choice options appear as buttons. If user selects Margin Scheme, make the button open a chat box for the user to input what the project's cost base will be and say: "What is the project's cost base for Margin Scheme purposes?"
+Step 4: Finance inputs - ASK ONE QUESTION AT A TIME
+"LVR (Loan to Value Ratio)? [60%] [70%] [80%] [Fully funded]"
+Then after they answer:
+"Interest rate? [6.5%] [7.0%] [7.5%] [Custom]"
+Then after they answer:
+"Project timeline in months?" (text input - user types number)
 
-Step 7: Calculate
-Only call calculate_quick_feasibility AFTER collecting ALL inputs above.
+Step 5: Other costs - ASK ONE QUESTION AT A TIME
+"Selling costs (agent + marketing)? [3%] [4%] [Custom]"
+Then after they answer:
+"GST treatment? [Margin scheme] [Fully taxed]"
 
-CRITICAL RULES FOR QUICK FEASO:
-- NEVER assume construction costs - always ask the user
-- NEVER assume LVR, interest rate, or timeline - always ask
-- Accept user corrections immediately without questioning
-- If user provides all inputs at once, parse them and confirm before calculating
-- One question per message maximum
-- Accept variations: "fully funded" = "full fund" = "100% LVR"
-- Accept variations: "18 months" = "18mo" = "18m"
+CRITICAL - BUTTON FORMAT RULES:
+- Multiple choice options MUST be in square brackets like [Option 1] [Option 2] [Option 3]
+- The frontend will detect [text] patterns and render them as clickable buttons
+- ALWAYS use brackets for GST question: "GST treatment? [Margin scheme] [Fully taxed]"
+- NEVER format as a list without brackets:
+  * WRONG: "GST treatment:\n- Margin scheme\n- Fully taxed"
+  * CORRECT: "GST treatment? [Margin scheme] [Fully taxed]"
+- If user clicks [Custom] for interest rate or selling costs, then ask for their custom value
+- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes? [Same as acquisition cost] [Different cost base]"
+  * If they click [Same as acquisition cost], use the land value/purchase price as the GST cost base
+  * If they click [Different cost base], ask: "What is the cost base amount?"
+- Always present button options on the SAME LINE as the question
+- Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
+
+CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
+- If you ask a button question and user's answer doesn't match ANY option, use ask_clarification
+- Examples:
+  * Asked: "LVR? [60%] [70%] [80%] [Fully funded]"
+  * User says: "apartments" → WRONG, use ask_clarification: "I need to know your LVR - 60%, 70%, 80%, or fully funded?"
+  * User says: "yes" → WRONG, use ask_clarification: "Which LVR - 60%, 70%, 80%, or fully funded?"
+- Accept close variations:
+  * "fully funded" / "full fund" / "100%" / "100% lvr" → Accept as [Fully funded]
+  * "6.5" / "6.5%" → Accept as [6.5%]
+  * "three percent" / "3" → Accept as [3%]
+
+CALLING THE TOOL - HOW TO PASS INPUTS:
+
+When you have ALL required inputs, call calculate_quick_feasibility.
+Pass EXACTLY what the user typed as raw strings. DO NOT convert to numbers.
+
+Example: User said "$10M" for land, "$45m" for GRV, "$10,000,000" for construction:
+{
+  propertyAddress: "247 Hedges Avenue, Mermaid Beach",
+  purchasePriceRaw: "$10M",
+  grvRaw: "$45m",
+  constructionCostRaw: "$10,000,000",
+  lvrRaw: "80%",
+  interestRateRaw: "8.5",
+  timelineRaw: "18",
+  sellingCostsRaw: "3%",
+  gstSchemeRaw: "margin scheme",
+  gstCostBaseRaw: "same as acquisition"
+}
+
+The backend handles ALL parsing and calculation. It returns a complete pre-formatted response.
+Your ONLY job after calling the tool: display the formattedResponse from the tool result VERBATIM.
+Do NOT add to it, modify it, or recalculate anything. Just output it exactly as received.
+
+REQUIRED INPUTS (must collect ALL before calling tool):
+1. Purchase price / Land value
+2. GRV (Gross Realisation Value)
+3. Construction cost (total)
+4. LVR (Loan to Value Ratio)
+5. Interest rate
+6. Timeline in months
+7. Selling costs percentage
+8. GST scheme (and cost base if margin scheme)
+
+RULES:
+- NEVER assume construction costs, LVR, interest rate, or timeline - always ask
+- One question per message
+- Accept variations: "fully funded" = 0% LVR, "18 months" = "18mo" = "18"
 - If user says "margin" for GST, that means margin scheme
+- When you have all inputs, call the tool immediately
+- NEVER ask the same question twice
+- Accept user corrections without questioning
+- DO NOT offer feasibility unprompted - only when explicitly asked
 
-${contextSummary}
-
-DO NOT offer feasibility unprompted. Only when explicitly asked.`;
+${contextSummary}`;
     
     // Build messages array with conversation history
     const messages = [];
     
-    if (conversationHistory && conversationHistory.length > 0) {
+    if (conversationHistory && Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       console.log('[CLAUDE] Adding conversation history...');
       const recentHistory = conversationHistory.slice(-20);
-      
+
       for (const msg of recentHistory) {
-        if (msg.content && (typeof msg.content === 'string' ? msg.content.trim() : true)) {
-          const content = typeof msg.content === 'string' 
-            ? msg.content.trim() 
-            : msg.content;
-          
-          if (content && (typeof content !== 'string' || content.length > 0)) {
-            messages.push({
-              role: msg.role,
-              content: content
-            });
+        // Validate message structure
+        if (!msg || !msg.role || !msg.content) continue;
+        if (msg.role !== 'user' && msg.role !== 'assistant') continue;
+
+        if (typeof msg.content === 'string') {
+          const trimmed = msg.content.trim();
+          if (trimmed.length > 0) {
+            messages.push({ role: msg.role, content: trimmed });
+          }
+        } else if (Array.isArray(msg.content)) {
+          // Structured content (e.g., tool_result blocks) - pass through if valid
+          const validBlocks = msg.content.filter(block =>
+            block && typeof block === 'object' && block.type
+          );
+          if (validBlocks.length > 0) {
+            messages.push({ role: msg.role, content: validBlocks });
           }
         }
+        // Skip non-string, non-array content (objects, numbers, etc.)
       }
-      
+
       console.log('[CLAUDE] Filtered history:', messages.length, 'messages');
     }
     
@@ -914,7 +1175,7 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
     console.log('[CLAUDE] Sending request to Anthropic API...');
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 800,
+      max_tokens: 2000,
       system: systemPrompt,
       tools,
       messages
@@ -935,8 +1196,9 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
       // Handle property info tool
       if (toolUse.name === 'get_property_info') {
-        if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
-        const propertyData = await scrapeProperty(toolUse.input.query, sendProgress);
+        const propertyQuery = toolUse.input.query;
+        if (sendProgress) sendProgress(`📍 Accessing planning controls for ${propertyQuery}...`);
+        const propertyData = await scrapeProperty(propertyQuery, sendProgress);
 
         if (propertyData.needsDisambiguation) {
           console.log('[CLAUDE] Disambiguation needed, asking user...');
@@ -998,12 +1260,13 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
         console.log('[CLAUDE] Property data retrieved');
 
-        if (sendProgress) sendProgress('🧠 Searching planning regulations...');
+        if (sendProgress) sendProgress('✓ Located property - checking zoning controls...');
         console.log('[CLAUDE] Searching planning scheme database...');
         const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
         console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
-        
-        if (sendProgress) sendProgress('✍️ Analyzing development potential...');
+
+        const zoneInfo = propertyData.property?.zone || 'zone';
+        if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays...`);
         
         toolResult = {
           ...propertyData,
@@ -1017,10 +1280,11 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
 
         // Build full address using context if suburb missing
         let searchAddress = toolUse.input.address;
+        if (sendProgress) sendProgress(`🔍 Searching development applications for ${searchAddress}...`);
         const inputSuburb = toolUse.input.suburb;
 
-        // Check if address already has suburb
-        const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami)/i.test(searchAddress);
+        // Check if address already has a Gold Coast suburb
+        const hasSuburb = /(?:mermaid|broadbeach|surfers|southport|palm beach|burleigh|robina|varsity|hope island|coolangatta|currumbin|tugun|miami|nobby|runaway bay|sanctuary cove|main beach|labrador|arundel|ashmore|benowa|biggera waters|bundall|carrara|clear island|coombabah|coomera|elanora|helensvale|highland park|hollywell|mudgeeraba|nerang|ormeau|oxenford|pacific pines|paradise point|parkwood|reedy creek|tallebudgera|upper coomera|worongary|springbrook|pimpama|molendinar|merrimac)/i.test(searchAddress);
 
         if (!hasSuburb) {
           // Try to add suburb from input or context
@@ -1041,7 +1305,10 @@ DO NOT offer feasibility unprompted. Only when explicitly asked.`;
           );
 
           console.log(`[CLAUDE] Found ${daResult.count} DAs`);
-          if (sendProgress) sendProgress(`Found ${daResult.count} applications`);
+          const daCountMsg = daResult.count === 0 ? 'No applications found'
+            : daResult.count === 1 ? '✓ Found 1 development application'
+            : `✓ Found ${daResult.count} development applications`;
+          if (sendProgress) sendProgress(daCountMsg);
 
           toolResult = daResult;
         } catch (daError) {
@@ -1120,7 +1387,14 @@ Focus on conditions that affect:
 - What must be completed before operation
 - Any significant amenities or requirements
 
-Be specific with numbers, hours, and requirements. Avoid generic statements.`
+Be specific with numbers, hours, and requirements. Avoid generic statements.
+
+CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
+- This DA shows what was APPROVED for this specific application
+- It does NOT change the underlying planning scheme controls (zone, height, density)
+- Example: If DA approves "45m building height", that's the APPROVED height for THIS project
+- The underlying City Plan control might still be "HX" - the DA achieved a variation
+- Never refer to DA-approved specs as if they're the planning scheme controls`
                     }
                   ]
                 }]
@@ -1205,7 +1479,8 @@ Be specific with numbers, hours, and requirements. Avoid generic statements.`
       // Handle start feasibility tool
       else if (toolUse.name === 'start_feasibility') {
         console.log('[CLAUDE] Starting feasibility analysis, mode:', toolUse.input.mode);
-        if (sendProgress) sendProgress('📊 Preparing feasibility analysis...');
+        const feasPropertyAddr = toolUse.input.propertyAddress || conversationContext.lastProperty || 'property';
+        if (sendProgress) sendProgress(`📊 Preparing feasibility analysis for ${feasPropertyAddr}...`);
         
         const { getDetailedFeasibilityPreFill } = await import('./feasibility-calculator.js');
         
@@ -1248,185 +1523,289 @@ Be specific with numbers, hours, and requirements. Avoid generic statements.`
         };
       }
       
-  // Handle quick feasibility calculation
+  // Handle quick feasibility calculation - NEW ENGINE
 else if (toolUse.name === 'calculate_quick_feasibility') {
-  console.log('[CLAUDE] Calculating quick feasibility');
-  if (sendProgress) sendProgress('🔢 Crunching the numbers...');
-  
+  console.log('[FEASO] ========== QUICK FEASIBILITY START ==========');
+  console.log('[FEASO] Raw inputs from Claude:', JSON.stringify(toolUse.input, null, 2));
+
+  if (sendProgress) sendProgress('🔢 Parsing inputs...');
+
   const input = toolUse.input;
-  
-  // Get values from input
-  const numUnits = input.numUnits;
-  const saleableArea = input.saleableArea;
-  const grvTotal = input.grvTotal;
-  const landValue = input.landValue || 0;
-  const constructionCost = input.constructionCost;
-  const lvr = input.lvr;
-  const interestRate = input.interestRate;
-  const timelineMonths = input.timelineMonths;
-  const sellingCostsPercent = input.sellingCostsPercent;
-  const gstScheme = input.gstScheme || 'margin';
-  const targetMarginPercent = input.targetMarginPercent || 20;
-  const contingencyIncluded = input.contingencyIncluded !== false;
-  
-  // Add contingency if not included
-  const constructionWithContingency = contingencyIncluded 
-    ? constructionCost 
-    : constructionCost * 1.05;
-  
-  // Convert percentages to decimals
-  const lvrDecimal = lvr / 100;
-  const interestDecimal = interestRate / 100;
-  const sellingDecimal = sellingCostsPercent / 100;
-  const targetMarginDecimal = targetMarginPercent / 100;
-  
-  // Calculate GST
-  let grvExclGST;
-  if (gstScheme === 'margin' && landValue > 0) {
-    const margin = grvTotal - landValue;
-    const gstPayable = margin / 11;
-    grvExclGST = grvTotal - gstPayable;
-  } else if (gstScheme === 'fully_taxed') {
-    grvExclGST = grvTotal / 1.1;
-  } else {
-    // Default to simple /1.1 if no land value for margin calc
-    grvExclGST = grvTotal / 1.1;
+  // FIX 4: Only use address explicitly provided by Claude from CURRENT conversation.
+  // Do NOT silently inject from conversationContext.lastProperty — that may contain
+  // a stale address from a previous session if frontend didn't clear conversationHistory.
+  const address = input.propertyAddress || '';
+  if (!address && conversationContext.lastProperty) {
+    console.log('[FEASO] Previous property in context:', conversationContext.lastProperty, '— NOT auto-injecting (must come from current conversation)');
   }
-  
-  // Calculate costs
-  const sellingCosts = grvExclGST * sellingDecimal;
-  
-  // Finance costs (50% average debt outstanding)
-  const totalDebt = (landValue + constructionWithContingency) * lvrDecimal;
-  const avgDebt = totalDebt * 0.5;
-  const financeCosts = avgDebt * interestDecimal * (timelineMonths / 12);
-  
-  // Total costs and profit
-  const totalCost = landValue + constructionWithContingency + sellingCosts + financeCosts;
-  const grossProfit = grvExclGST - totalCost;
-  const profitMargin = (grossProfit / grvExclGST) * 100;
-  
-  // Calculate residual land value at target margin
-  const targetProfit = grvExclGST * targetMarginDecimal;
-  let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
-  
-  // Iterate to account for finance costs on land
-  for (let i = 0; i < 5; i++) {
-    const residualDebt = (residualLandValue + constructionWithContingency) * lvrDecimal;
-    const residualAvgDebt = residualDebt * 0.5;
-    const residualFinanceCosts = residualAvgDebt * interestDecimal * (timelineMonths / 12);
-    residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - residualFinanceCosts - targetProfit;
-  }
-  
-  // Determine viability
-  let viability;
-  if (profitMargin >= 25) viability = 'viable';
-  else if (profitMargin >= 20) viability = 'marginal';
-  else if (profitMargin >= 15) viability = 'challenging';
-  else viability = 'not_viable';
-  
-  if (sendProgress) sendProgress('✅ Feasibility calculated');
-  
-  toolResult = {
-    success: true,
-    feasibilityMode: 'results',
-    
-    inputs: {
-      address: input.propertyAddress || conversationContext.lastProperty,
-      projectType: input.projectType,
-      numUnits: numUnits,
-      unitMix: input.unitMix,
-      saleableArea: saleableArea,
-      landValue: landValue,
-      constructionCost: constructionWithContingency,
-      contingencyIncluded: contingencyIncluded,
-      lvr: lvr,
-      interestRate: interestRate,
-      timelineMonths: timelineMonths,
-      sellingCostsPercent: sellingCostsPercent,
-      gstScheme: gstScheme
-    },
-    
-    revenue: {
-      grvInclGST: grvTotal,
-      grvExclGST: Math.round(grvExclGST),
-      avgPricePerUnit: Math.round(grvTotal / numUnits)
-    },
-    
-    costs: {
-      land: landValue,
-      construction: Math.round(constructionWithContingency),
-      selling: Math.round(sellingCosts),
-      finance: Math.round(financeCosts),
-      total: Math.round(totalCost)
-    },
-    
-    profitability: {
-      grossProfit: Math.round(grossProfit),
-      profitMargin: Math.round(profitMargin * 10) / 10,
-      targetMargin: targetMarginPercent,
-      meetsTarget: profitMargin >= targetMarginPercent,
-      viability: viability
-    },
-    
-    residual: {
-      residualLandValue: Math.round(residualLandValue),
-      vsActualLand: landValue > 0 ? Math.round(residualLandValue - landValue) : null
-    },
-    
-    assumptions: {
-      contingency: contingencyIncluded ? 'Included in construction' : 'Added 5%',
-      financeDrawProfile: '50% average outstanding',
-      stampDuty: 'Excluded',
-      holdingCosts: 'Excluded'
+  const mode = input.mode || 'standard';
+
+  try {
+    let result;
+
+    // Build full conversation history (including current query) for extraction
+    const fullHistory = [
+      ...(conversationHistory || []),
+      { role: 'user', content: userQuery }
+    ];
+
+    if (mode === 'residual') {
+      // Residual land value mode - user wants to know max land price
+      if (sendProgress) sendProgress('📊 Calculating residual land value...');
+      result = runResidualAnalysis(input, address, null, fullHistory);
+    } else {
+      // Standard feasibility - pass conversation history so backend can extract REAL values
+      if (sendProgress) sendProgress('📊 Crunching the numbers...');
+      result = runQuickFeasibility(input, address, fullHistory);
     }
-  };
+
+    // Handle null/undefined result
+    if (!result) {
+      throw new Error('Feasibility engine returned no result');
+    }
+
+    // Handle validation errors (missing required inputs)
+    if (result.validationErrors) {
+      console.log('[FEASO] Validation failed — missing inputs:', result.validationErrors);
+      if (sendProgress) sendProgress('⚠️ Missing required inputs');
+      toolResult = {
+        success: false,
+        feasibilityMode: 'results',
+        formattedResponse: result.formattedResponse,
+        calculationData: result.calculationData,
+        parsedInputs: result.parsedInputs
+      };
+    } else {
+      if (sendProgress) sendProgress('✅ Feasibility calculated');
+
+      console.log('[FEASO] ========== RESULTS ==========');
+      console.log('[FEASO] Profit:', result.calculationData.profitability.grossProfit);
+      console.log('[FEASO] Margin:', result.calculationData.profitability.profitMargin + '%');
+      console.log('[FEASO] Viability:', result.calculationData.profitability.viabilityLabel);
+      console.log('[FEASO] ========== END ==========');
+
+      // Return the pre-formatted response + structured data
+      toolResult = {
+        success: true,
+        feasibilityMode: 'results',
+        formattedResponse: result.formattedResponse,
+        calculationData: result.calculationData,
+        parsedInputs: result.parsedInputs
+      };
+    }
+  } catch (calcError) {
+    console.error('[FEASO] Calculation error:', calcError.message);
+    console.error('[FEASO] Stack:', calcError.stack);
+    toolResult = {
+      success: false,
+      error: calcError.message,
+      formattedResponse: 'I couldn\'t calculate the feasibility with those inputs. Could you double-check the numbers and try again?'
+    };
+  }
 }
-      // Send the tool result back to Claude
-      const finalResponse = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 800,
-        system: systemPrompt,
-        tools,
-        messages: [
-          ...messages,
-          {
-            role: 'assistant',
-            content: response.content
+      // ============================================================
+      // FEASIBILITY: Return pre-formatted response directly
+      // DO NOT send back to Claude - this eliminates hallucination
+      // ============================================================
+      if (toolUse.name === 'calculate_quick_feasibility' && toolResult?.formattedResponse) {
+        console.log('[CLAUDE] Returning pre-formatted feasibility response (bypassing Claude)');
+
+        // Parse button options from the formatted response
+        const buttonOptions = parseButtonOptions(toolResult.formattedResponse);
+        const questionContext = buttonOptions ? detectQuestionContext(toolResult.formattedResponse, buttonOptions) : null;
+
+        return {
+          answer: toolResult.formattedResponse,
+          propertyData: null,
+          feasibilityData: {
+            success: toolResult.success,
+            feasibilityMode: 'results',
+            calculationData: toolResult.calculationData,
+            parsedInputs: toolResult.parsedInputs
           },
-          {
-            role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: JSON.stringify(toolResult, null, 2)
-            }]
+          buttonOptions: buttonOptions,
+          questionContext: questionContext,
+          usedTool: true,
+          toolName: toolUse.name,
+          toolQuery: toolUse.input.propertyAddress
+        };
+      }
+
+      // ============================================================
+      // ALL OTHER TOOLS: Send result back to Claude for interpretation
+      // Handle follow-up tool calls in a loop (e.g. property lookup → start_feasibility → text)
+      // ============================================================
+      let loopMessages = [
+        ...messages,
+        { role: 'assistant', content: response.content },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(toolResult, null, 2) }] }
+      ];
+
+      let allTextParts = [];
+      let latestPropertyData = toolUse.name === 'get_property_info' ? toolResult : null;
+      let latestFeasibilityData = null;
+      let latestDaData = toolUse.name === 'search_development_applications' ? toolResult : null;
+      let latestToolName = toolUse.name;
+      const MAX_TOOL_LOOPS = 4;
+
+      for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
+        console.log(`[CLAUDE] Tool loop ${loop + 1}/${MAX_TOOL_LOOPS}`);
+
+        const loopResponse = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          system: systemPrompt,
+          tools,
+          messages: loopMessages
+        });
+
+        console.log('[CLAUDE] Loop response types:', loopResponse.content.map(c => c.type));
+        console.log('[CLAUDE] Loop stop_reason:', loopResponse.stop_reason);
+
+        // Collect text from this response
+        const textBlock = loopResponse.content.find(c => c.type === 'text');
+        if (textBlock?.text?.trim()) {
+          allTextParts.push(textBlock.text.trim());
+        }
+
+        // Check for follow-up tool call
+        const nextTool = loopResponse.content.find(c => c.type === 'tool_use');
+
+        if (!nextTool) {
+          // No more tools — we have our final text response
+          console.log('[CLAUDE] No more tool calls, returning text');
+          break;
+        }
+
+        console.log(`[CLAUDE] Follow-up tool: ${nextTool.name}`);
+
+        let nextResult;
+
+        // Handle calculate_quick_feasibility — BYPASS (return immediately)
+        if (nextTool.name === 'calculate_quick_feasibility') {
+          console.log('[CLAUDE] Follow-up: calculate_quick_feasibility — bypassing');
+          const fInput = nextTool.input;
+          // FIX 4: No auto-injection of previous address in follow-up path either
+          const fAddress = fInput.propertyAddress || '';
+          const fMode = fInput.mode || 'standard';
+
+          try {
+            const fullHistory = [...(conversationHistory || []), { role: 'user', content: userQuery }];
+            let fResult;
+            if (fMode === 'residual') {
+              fResult = runResidualAnalysis(fInput, fAddress, null, fullHistory);
+            } else {
+              fResult = runQuickFeasibility(fInput, fAddress, fullHistory);
+            }
+
+            // Combine earlier text with feasibility response
+            const preText = allTextParts.length > 0 ? allTextParts.join('\n\n') + '\n\n' : '';
+            const fButtonOptions = parseButtonOptions(fResult.formattedResponse);
+            const fQuestionContext = fButtonOptions ? detectQuestionContext(fResult.formattedResponse, fButtonOptions) : null;
+
+            return {
+              answer: preText + fResult.formattedResponse,
+              propertyData: latestPropertyData,
+              feasibilityData: {
+                success: true,
+                feasibilityMode: 'results',
+                calculationData: fResult.calculationData,
+                parsedInputs: fResult.parsedInputs
+              },
+              buttonOptions: fButtonOptions,
+              questionContext: fQuestionContext,
+              usedTool: true,
+              toolName: nextTool.name,
+              toolQuery: fInput.propertyAddress
+            };
+          } catch (calcError) {
+            console.error('[CLAUDE] Follow-up feasibility error:', calcError.message);
+            nextResult = { success: false, error: calcError.message };
           }
-        ]
-      });
+        }
 
-      console.log('[CLAUDE] Final advisory generated');
+        // Handle ask_clarification — return immediately
+        else if (nextTool.name === 'ask_clarification') {
+          let clarMsg = nextTool.input.originalQuestion;
+          if (nextTool.input.clarificationType === 'choice_needed') {
+            const opts = nextTool.input.options?.map((o, i) => `${i + 1}. ${o}`).join('\n') || '';
+            clarMsg = `${nextTool.input.originalQuestion}\n\nPlease choose:\n${opts}`;
+          }
+          const preText = allTextParts.length > 0 ? allTextParts.join('\n\n') + '\n\n' : '';
+          return {
+            answer: preText + clarMsg,
+            propertyData: latestPropertyData,
+            usedTool: 'ask_clarification',
+            needsClarification: true
+          };
+        }
 
-      const textContent = finalResponse.content.find(c => c.type === 'text');
+        // Handle start_feasibility
+        else if (nextTool.name === 'start_feasibility') {
+          const fesoMode = nextTool.input.mode || 'selection';
+          nextResult = {
+            success: true,
+            feasibilityMode: fesoMode,
+            propertyAddress: nextTool.input.propertyAddress,
+            message: fesoMode === 'detailed'
+              ? 'Opening detailed feasibility calculator'
+              : fesoMode === 'quick'
+              ? 'Starting quick feasibility analysis'
+              : 'Choose quick or detailed analysis'
+          };
+          latestFeasibilityData = nextResult;
+          latestToolName = 'start_feasibility';
+        }
 
-      const isFeasibility = toolUse.name === 'start_feasibility' || toolUse.name === 'calculate_quick_feasibility';
-      const isPropertyAnalysis = toolUse.name === 'get_property_info';
+        // Handle get_property_info
+        else if (nextTool.name === 'get_property_info') {
+          try {
+            if (sendProgress) sendProgress('📍 Accessing Gold Coast City Plan...');
+            const propData = await scrapeProperty(nextTool.input.query, sendProgress);
+            nextResult = propData;
+            latestPropertyData = propData;
+            latestToolName = 'get_property_info';
+          } catch (e) {
+            nextResult = { error: e.message };
+          }
+        }
 
-      // For property analysis, preserve professional structure; for other responses, apply casual formatting
+        // Any other tool — provide simple result
+        else {
+          nextResult = { success: true, message: 'Processed' };
+          latestToolName = nextTool.name;
+        }
+
+        // Add exchange to messages for next iteration
+        loopMessages.push(
+          { role: 'assistant', content: loopResponse.content },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: nextTool.id, content: JSON.stringify(nextResult, null, 2) }] }
+        );
+      }
+
+      // Build final response from collected text
+      const combinedText = allTextParts.join('\n\n');
+      const isPropertyAnalysis = latestToolName === 'get_property_info';
+      const isFeasibility = latestToolName === 'start_feasibility';
+
       let formattedAnswer = isPropertyAnalysis
-        ? stripMarkdown(textContent?.text)
-        : formatIntoParagraphs(stripMarkdown(textContent?.text));
+        ? stripMarkdown(combinedText)
+        : formatIntoParagraphs(stripMarkdown(combinedText));
 
-      // Fix inline bullet points by adding newlines between them (only for lists, not explanations)
       formattedAnswer = fixBulletPoints(formattedAnswer);
+
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
 
       return {
         answer: formattedAnswer || 'Unable to generate response',
-        propertyData: toolUse.name === 'get_property_info' ? toolResult : null,
-        daData: toolUse.name === 'search_development_applications' ? toolResult : null,
-        feasibilityData: isFeasibility ? toolResult : null,
+        propertyData: latestPropertyData,
+        daData: latestDaData,
+        feasibilityData: latestFeasibilityData,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: true,
-        toolName: toolUse.name,
+        toolName: latestToolName,
         toolQuery: toolUse.input.query || toolUse.input.address || toolUse.input.propertyAddress
       };
     } else {
@@ -1438,9 +1817,15 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       let formattedAnswer = formatIntoParagraphs(stripMarkdown(textContent?.text));
       formattedAnswer = fixBulletPoints(formattedAnswer);
 
+      // Parse button options from the response (for feasibility questions)
+      const buttonOptions = parseButtonOptions(formattedAnswer);
+      const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: null,
+        buttonOptions: buttonOptions,
+        questionContext: questionContext,
         usedTool: false
       };
     }
