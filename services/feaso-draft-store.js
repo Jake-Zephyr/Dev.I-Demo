@@ -32,9 +32,10 @@ export function getDefaultAssumptions() {
     loanLVRDefault: 65,
     councilRatesAnnual: 5000,
     waterRatesAnnual: 1400,
+    insurancePercent: 0.3,        // % of construction cost per year
     drawdownProfile: 'linear',
-    targetDevMarginSmall: 15,  // GRV < $15M
-    targetDevMarginLarge: 20   // GRV >= $15M
+    targetDevMarginSmall: 15,     // GRV < $15M
+    targetDevMarginLarge: 20      // GRV >= $15M
   };
 }
 
@@ -84,6 +85,16 @@ function createEmptyDraft(conversationId) {
     },
 
     assumptions: getDefaultAssumptions(),
+
+    // Computed holding costs — recalculated whenever inputs change
+    holdingCosts: {
+      landTaxAnnual: 0,         // Calculated from purchasePrice using QLD brackets
+      councilRatesAnnual: 5000, // From assumptions
+      waterRatesAnnual: 1400,   // From assumptions
+      insuranceAnnual: 0,       // 0.3% of construction cost per year
+      totalHoldingAnnual: 6400, // Sum of above
+      totalHoldingProject: 0    // Prorated for timeline (months / 12)
+    },
 
     status: 'collecting',  // 'collecting' | 'ready_to_calculate' | 'calculated'
     results: null,
@@ -197,6 +208,11 @@ export function patchDraft(conversationId, patch, source = 'chat') {
     }
   }
 
+  // Recompute holding costs whenever inputs or assumptions change
+  if (patch.inputs || patch.assumptions) {
+    recomputeHoldingCosts(draft);
+  }
+
   // Update status
   draft.status = checkReadyStatus(draft);
   draft.updatedAt = new Date().toISOString();
@@ -306,6 +322,50 @@ export function resetDraft(conversationId) {
 
 export function deleteDraft(conversationId) {
   store.delete(conversationId);
+}
+
+// ============================================================
+// HOLDING COSTS — auto-recalculated when inputs change
+// ============================================================
+
+/**
+ * QLD Land Tax brackets (2025-26 QRO rates)
+ * Matches quick-feasibility-engine.js calculateLandTaxQLD()
+ */
+function calculateLandTaxQLD(landValue) {
+  if (!landValue || landValue <= 350000) return 0;
+  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
+  return 75000 + (landValue - 5000000) * 0.02;
+}
+
+/**
+ * Recompute holdingCosts on the draft from current inputs + assumptions.
+ * Called automatically after every patchDraft.
+ */
+function recomputeHoldingCosts(draft) {
+  const landValue = draft.inputs.purchasePrice || 0;
+  const constructionCost = draft.inputs.constructionCost || 0;
+  const timelineMonths = draft.inputs.timelineMonths || 0;
+  const insurancePct = draft.assumptions.insurancePercent ?? 0.3;
+
+  const landTaxAnnual = Math.round(calculateLandTaxQLD(landValue));
+  const councilRatesAnnual = draft.assumptions.councilRatesAnnual || 5000;
+  const waterRatesAnnual = draft.assumptions.waterRatesAnnual || 1400;
+  const insuranceAnnual = Math.round(constructionCost * (insurancePct / 100));
+  const totalHoldingAnnual = landTaxAnnual + councilRatesAnnual + waterRatesAnnual + insuranceAnnual;
+  const totalHoldingProject = timelineMonths > 0
+    ? Math.round(totalHoldingAnnual * (timelineMonths / 12))
+    : 0;
+
+  draft.holdingCosts = {
+    landTaxAnnual,
+    councilRatesAnnual,
+    waterRatesAnnual,
+    insuranceAnnual,
+    totalHoldingAnnual,
+    totalHoldingProject
+  };
 }
 
 // ============================================================
