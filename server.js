@@ -469,10 +469,15 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     
     // Don't send generic progress here - let claude.js handle all progress messages
     // based on what it's actually doing (conversational vs tool-based)
-    const response = await getAdvisory(query, conversationHistory, sendProgress);
-    
-    res.write(`data: ${JSON.stringify({ 
-      type: 'complete', 
+    const response = await getAdvisory(query, validatedHistory, sendProgress);
+
+    if (!connectionOpen) {
+      console.log('[ADVISE-STREAM] Client disconnected before response could be sent');
+      return;
+    }
+
+    safeWrite({
+      type: 'complete',
       data: response,
       timestamp: new Date().toISOString()
     });
