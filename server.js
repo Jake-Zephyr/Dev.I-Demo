@@ -11,6 +11,7 @@ import {
 } from './middleware/protection.js';
 import { apiKeyAuthMiddleware } from './middleware/auth.js';
 import { calculateStampDuty } from './services/stamp-duty-calculator.js';
+import { getDraft, patchDraft, calculateDraft, resetDraft, getDefaultAssumptions } from './services/feaso-draft-store.js';
 
 // Nearby DAs service
 let getNearbyDAs = async () => ({ success: false, error: 'Service not available' });
@@ -397,7 +398,7 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
   };
 
   try {
-    const { query, conversationHistory, requestType } = req.body;
+    const { query, conversationHistory, requestType, conversationId } = req.body;
 
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
       safeWrite({ type: 'error', message: 'Query is required' });
@@ -421,6 +422,7 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     console.log('[ADVISE-STREAM] Query:', query);
     console.log('[ADVISE-STREAM] Request type:', requestType || 'standard');
     console.log('[ADVISE-STREAM] History length:', validatedHistory.length);
+    console.log('[ADVISE-STREAM] Conversation ID:', conversationId || '(none)');
 
     if (requestType === 'overlays-only') {
       console.log('[ADVISE-STREAM] Overlay-only mode activated');
@@ -469,7 +471,7 @@ app.post('/api/advise-stream', apiKeyAuthMiddleware, rateLimitMiddleware, queryV
     
     // Don't send generic progress here - let claude.js handle all progress messages
     // based on what it's actually doing (conversational vs tool-based)
-    const response = await getAdvisory(query, validatedHistory, sendProgress);
+    const response = await getAdvisory(query, validatedHistory, sendProgress, conversationId || null);
 
     if (!connectionOpen) {
       console.log('[ADVISE-STREAM] Client disconnected before response could be sent');
@@ -836,6 +838,81 @@ app.post('/api/generate-chat-title', apiKeyAuthMiddleware, rateLimitMiddleware, 
   }
 });
 
+// ============================================================
+// FEASIBILITY DRAFT ENDPOINTS
+// ============================================================
+
+// GET draft (creates if not exists)
+app.get('/api/feaso/draft', apiKeyAuthMiddleware, async (req, res) => {
+  try {
+    const { conversationId } = req.query;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    const draft = getDraft(conversationId);
+    res.json({ draft });
+  } catch (error) {
+    console.error('[FEASO-DRAFT] GET error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH draft (partial update)
+app.patch('/api/feaso/draft', apiKeyAuthMiddleware, async (req, res) => {
+  try {
+    const { conversationId, patch, source } = req.body;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    if (!patch || typeof patch !== 'object') {
+      return res.status(400).json({ error: 'patch object is required' });
+    }
+    const result = patchDraft(conversationId, patch, source || 'panel');
+    res.json(result);
+  } catch (error) {
+    console.error('[FEASO-DRAFT] PATCH error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST calculate from draft
+app.post('/api/feaso/calc-detailed', apiKeyAuthMiddleware, async (req, res) => {
+  try {
+    const { conversationId, mode } = req.body;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    const result = calculateDraft(conversationId, mode || 'standard');
+    if (result.error) {
+      return res.status(result.code || 400).json({ error: result.error, missing: result.missing });
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('[FEASO-DRAFT] CALC error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST reset draft
+app.post('/api/feaso/reset', apiKeyAuthMiddleware, async (req, res) => {
+  try {
+    const { conversationId } = req.body;
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+    const draft = resetDraft(conversationId);
+    res.json({ draft });
+  } catch (error) {
+    console.error('[FEASO-DRAFT] RESET error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET default assumptions
+app.get('/api/feaso/defaults', (req, res) => {
+  res.json({ assumptions: getDefaultAssumptions() });
+});
+
 // Start server
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
@@ -853,7 +930,12 @@ app.listen(PORT, () => {
   console.log(`   POST /api/nearby-das  📍`);
   console.log(`   POST /api/pdonline-das  🏗️`);
   console.log(`   POST /api/generate-visualization  🎨`);
-  console.log(`   POST /api/generate-chat-title  💬 NEW`);
+  console.log(`   POST /api/generate-chat-title  💬`);
+  console.log(`   GET  /api/feaso/draft  📊 NEW`);
+  console.log(`   PATCH /api/feaso/draft  📊 NEW`);
+  console.log(`   POST /api/feaso/calc-detailed  📊 NEW`);
+  console.log(`   POST /api/feaso/reset  📊 NEW`);
+  console.log(`   GET  /api/feaso/defaults  📊 NEW`);
 });
 
 export default app;
