@@ -63,6 +63,7 @@ Every `complete` event from `/api/advise-stream` now includes an optional `feasi
         "agentFeesPercent": 1.5,
         "marketingPercent": 1.2,
         "legalSellingPercent": 0.3,
+        "insurancePercent": 0.3,
         "interestRateDefault": 6.75,
         "loanLVRDefault": 65,
         "councilRatesAnnual": 5000,
@@ -70,6 +71,14 @@ Every `complete` event from `/api/advise-stream` now includes an optional `feasi
         "drawdownProfile": "linear",
         "targetDevMarginSmall": 15,
         "targetDevMarginLarge": 20
+      },
+      "holdingCosts": {
+        "landTaxAnnual": 14900,
+        "councilRatesAnnual": 5000,
+        "waterRatesAnnual": 1400,
+        "insuranceAnnual": 10500,
+        "totalHoldingAnnual": 31800,
+        "totalHoldingProject": 0
       },
       "status": "collecting",
       "results": null,
@@ -89,6 +98,8 @@ Every `complete` event from `/api/advise-stream` now includes an optional `feasi
 - `status` transitions: `"collecting"` → `"ready_to_calculate"` → `"calculated"`
 - When `status === "calculated"`, `results` contains the full calculation output
 - `sourceMap` tracks where each value came from: `"chat"`, `"panel"`, `"property_tool"`, `"default"`
+- `holdingCosts` is auto-recalculated by the backend whenever `purchasePrice`, `constructionCost`, or `timelineMonths` changes
+- `holdingCosts.landTaxAnnual` is computed from QLD land tax brackets based on the purchase price
 
 ### 2. New Backend API Endpoints
 
@@ -237,9 +248,65 @@ useEffect(() => {
       next.gstCostBase = String(preFill.inputs.gstCostBase);
     }
 
+    // ======================================
     // Assumptions (defaults from server)
+    // ALL of these should be populated into the detailed view
+    // ======================================
     if (preFill.assumptions?.contingencyPercent !== undefined && !prev.contingencyPercent) {
       next.contingencyPercent = String(preFill.assumptions.contingencyPercent);
+    }
+    if (preFill.assumptions?.profFeesPercent !== undefined && !prev.profFeesPercent) {
+      next.profFeesPercent = String(preFill.assumptions.profFeesPercent);
+    }
+    if (preFill.assumptions?.statutoryFeesPercent !== undefined && !prev.statutoryFeesPercent) {
+      next.statutoryFeesPercent = String(preFill.assumptions.statutoryFeesPercent);
+    }
+    if (preFill.assumptions?.pmFeesPercent !== undefined && !prev.pmFeesPercent) {
+      next.pmFeesPercent = String(preFill.assumptions.pmFeesPercent);
+    }
+    if (preFill.assumptions?.agentFeesPercent !== undefined && !prev.sellingAgentFeesPercent) {
+      next.sellingAgentFeesPercent = String(preFill.assumptions.agentFeesPercent);
+    }
+    if (preFill.assumptions?.marketingPercent !== undefined && !prev.marketingPercent) {
+      next.marketingPercent = String(preFill.assumptions.marketingPercent);
+    }
+    if (preFill.assumptions?.legalSellingPercent !== undefined && !prev.legalSellingPercent) {
+      next.legalSellingPercent = String(preFill.assumptions.legalSellingPercent);
+    }
+    if (preFill.assumptions?.insurancePercent !== undefined && !prev.insurancePercent) {
+      next.insurancePercent = String(preFill.assumptions.insurancePercent);
+    }
+    if (preFill.assumptions?.targetDevMarginSmall !== undefined && !prev.targetMarginSmall) {
+      next.targetMarginSmall = String(preFill.assumptions.targetDevMarginSmall);
+    }
+    if (preFill.assumptions?.targetDevMarginLarge !== undefined && !prev.targetMarginLarge) {
+      next.targetMarginLarge = String(preFill.assumptions.targetDevMarginLarge);
+    }
+    if (preFill.assumptions?.drawdownProfile && !prev.drawdownProfile) {
+      next.drawdownProfile = preFill.assumptions.drawdownProfile;
+    }
+
+    // ======================================
+    // Holding Costs (auto-calculated by backend)
+    // These update as purchasePrice/constructionCost/timeline are provided
+    // ======================================
+    if (preFill.holdingCosts?.landTaxAnnual !== undefined) {
+      next.landTaxAnnual = String(preFill.holdingCosts.landTaxAnnual);
+    }
+    if (preFill.holdingCosts?.councilRatesAnnual !== undefined) {
+      next.councilRatesAnnual = String(preFill.holdingCosts.councilRatesAnnual);
+    }
+    if (preFill.holdingCosts?.waterRatesAnnual !== undefined) {
+      next.waterRatesAnnual = String(preFill.holdingCosts.waterRatesAnnual);
+    }
+    if (preFill.holdingCosts?.insuranceAnnual !== undefined) {
+      next.insuranceAnnual = String(preFill.holdingCosts.insuranceAnnual);
+    }
+    if (preFill.holdingCosts?.totalHoldingAnnual !== undefined) {
+      next.totalHoldingAnnual = String(preFill.holdingCosts.totalHoldingAnnual);
+    }
+    if (preFill.holdingCosts?.totalHoldingProject !== undefined) {
+      next.totalHoldingProject = String(preFill.holdingCosts.totalHoldingProject);
     }
 
     return next;
@@ -365,13 +432,36 @@ During the chat wizard, inputs are read-only in the panel to prevent user edits 
 | Prof Fees | `assumptions.profFeesPercent` | `profFeesPercent` | 8% |
 | Statutory | `assumptions.statutoryFeesPercent` | `statutoryFeesPercent` | 2% |
 | PM Fees | `assumptions.pmFeesPercent` | `pmFeesPercent` | 3% |
-| Agent Fees | `assumptions.agentFeesPercent` | `agentFeesPercent` | 1.5% |
+| Agent Fees | `assumptions.agentFeesPercent` | `sellingAgentFeesPercent` | 1.5% |
 | Marketing | `assumptions.marketingPercent` | `marketingPercent` | 1.2% |
 | Legal Selling | `assumptions.legalSellingPercent` | `legalSellingPercent` | 0.3% |
+| Insurance | `assumptions.insurancePercent` | `insurancePercent` | 0.3% |
 | Interest Rate | `assumptions.interestRateDefault` | `interestRate` | 6.75% |
 | LVR Default | `assumptions.loanLVRDefault` | `lvr` | 65% |
-| Target Margin (< $15M) | `assumptions.targetDevMarginSmall` | `targetMargin` | 15% |
-| Target Margin (>= $15M) | `assumptions.targetDevMarginLarge` | `targetMargin` | 20% |
+| Drawdown Profile | `assumptions.drawdownProfile` | `drawdownProfile` | "linear" |
+| Target Margin (< $15M) | `assumptions.targetDevMarginSmall` | `targetMarginSmall` | 15% |
+| Target Margin (>= $15M) | `assumptions.targetDevMarginLarge` | `targetMarginLarge` | 20% |
+
+## Holding Costs Field Mapping
+
+These are **auto-calculated by the backend** whenever `purchasePrice`, `constructionCost`, or `timelineMonths` changes. They update progressively as the user provides inputs during the Q&A.
+
+| Holding Cost | Draft Path | Calculator Field | How It's Calculated |
+|-------------|-----------|-----------------|-------------------|
+| Land Tax (annual) | `holdingCosts.landTaxAnnual` | `landTaxAnnual` | QLD tiered brackets based on purchasePrice |
+| Council Rates (annual) | `holdingCosts.councilRatesAnnual` | `councilRatesAnnual` | Default $5,000/yr |
+| Water Rates (annual) | `holdingCosts.waterRatesAnnual` | `waterRatesAnnual` | Default $1,400/yr |
+| Insurance (annual) | `holdingCosts.insuranceAnnual` | `insuranceAnnual` | 0.3% of constructionCost/yr |
+| Total Holding (annual) | `holdingCosts.totalHoldingAnnual` | `totalHoldingAnnual` | Sum of all above |
+| Total Holding (project) | `holdingCosts.totalHoldingProject` | `totalHoldingProject` | Annual total prorated for timelineMonths |
+
+**QLD Land Tax Brackets (2025-26):**
+- $0 - $350,000: $0
+- $350,001 - $2,250,000: $1,450 + 1.7% above $350k
+- $2,250,001 - $5,000,000: $33,750 + 1.5% above $2.25M
+- $5,000,001+: $75,000 + 2.0% above $5M
+
+**Example:** Purchase price $1,200,000 → Land tax = $1,450 + ($850,000 x 0.017) = $15,900/yr
 
 ---
 
@@ -387,6 +477,8 @@ During the chat wizard, inputs are read-only in the panel to prevent user edits 
 8. Click "Download PDF" → PDF generated with correct values
 9. **CRITICAL**: No stale data from previous properties appears
 10. The address in results MATCHES the property being discussed
+11. **ALL assumptions** (contingency, prof fees, statutory, PM, agent, marketing, legal, insurance, drawdown, target margins) are populated in the detailed view with their defaults
+12. **ALL holding costs** (land tax, council rates, water rates, insurance) are populated and update as the user provides purchase price, construction cost, and timeline
 
 ---
 
@@ -401,4 +493,30 @@ After implementing, test this exact flow:
 5. Enter: $1.2m → $7m → $3.5m → 80% → 8% → 12 → 3% → Margin scheme → Same as acquisition
 6. Verify: Results show "51 Binya Avenue" (NOT "247 Hedges Avenue")
 7. Verify: Land = $1,200,000, GRV = $7,000,000, Construction = $3,500,000
-8. Verify: Calculator panel is fully populated with matching values
+8. Verify: Calculator panel has ALL required inputs:
+   - Purchase Price = 1,200,000
+   - GRV = 7,000,000
+   - Construction Cost = 3,500,000
+   - LVR = 80%
+   - Interest Rate = 8%
+   - Timeline = 12 months
+   - Selling Costs = 3%
+   - GST Scheme = margin
+   - GST Cost Base = 1,200,000
+9. Verify: Calculator panel has ALL default assumptions populated:
+   - Contingency = 5%
+   - Prof Fees = 8%
+   - Statutory Fees = 2%
+   - PM Fees = 3%
+   - Agent Fees = 1.5%
+   - Marketing = 1.2%
+   - Legal Selling = 0.3%
+   - Insurance = 0.3%
+   - Target Margin = 15% (GRV < $15M)
+10. Verify: Calculator panel has holding costs populated:
+    - Land Tax = ~$15,900/yr (auto-calculated from $1.2M)
+    - Council Rates = $5,000/yr
+    - Water Rates = $1,400/yr
+    - Insurance = ~$10,500/yr (0.3% of $3.5M)
+    - Total Holding Annual = ~$32,800/yr
+    - Total Holding Project = ~$32,800 (12 months)
