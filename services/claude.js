@@ -3,7 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { scrapeProperty } from './goldcoast-api.js';
 import { searchPlanningScheme } from './rag-simple.js';
 import { getDetailedFeasibilityPreFill } from './feasibility-calculator.js';
-import { runQuickFeasibility, runResidualAnalysis } from './quick-feasibility-engine.js';
+import { runQuickFeasibility, runResidualAnalysis, extractInputsFromConversation } from './quick-feasibility-engine.js';
+import { getDraft, patchDraft, calculateDraft, resetDraft, parseInputValue, getDefaultAssumptions } from './feaso-draft-store.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
@@ -417,6 +418,115 @@ function buildContextSummary(context) {
   
   return parts.length > 0 ? `\n\nCONVERSATION CONTEXT:\n${parts.join('\n')}` : '';
 }
+
+/**
+ * Detect if we're currently in an active feasibility Q&A flow.
+ * Returns true if recent messages contain feaso-related Q&A.
+ */
+function detectFeasibilityFlow(conversationHistory) {
+  if (!conversationHistory || conversationHistory.length < 2) return false;
+
+  // Check the last few assistant messages for feaso-related content
+  const recentMessages = conversationHistory.slice(-6);
+  for (const msg of recentMessages) {
+    if (msg.role !== 'assistant') continue;
+    const content = String(msg.content || '').toLowerCase();
+    if (
+      content.includes('purchase price') ||
+      content.includes('acquisition cost') ||
+      content.includes('gross revenue') ||
+      content.includes('grv') ||
+      content.includes('construction cost') ||
+      content.includes('lvr') ||
+      content.includes('loan to value') ||
+      content.includes('interest rate') ||
+      content.includes('timeline') ||
+      content.includes('selling cost') ||
+      content.includes('gst') ||
+      content.includes('quick feaso') ||
+      content.includes('feasibility') ||
+      content.includes('cost base')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Build progressive feasibility pre-fill data for the frontend calculator.
+ * Called during active feasibility Q&A to progressively fill the detailed calculator panel.
+ *
+ * @param {Array} conversationHistory - Full conversation history
+ * @param {Object} conversationContext - Extracted context from conversation
+ * @param {string} conversationId - Unique ID for this conversation
+ * @returns {Object|null} Pre-fill data for the frontend calculator
+ */
+function buildFeasibilityPreFill(conversationHistory, conversationContext, conversationId) {
+  // Get or create draft
+  const draft = getDraft(conversationId);
+
+  // Always include property data from context
+  if (conversationContext.lastProperty && !draft.property.address) {
+    patchDraft(conversationId, {
+      property: {
+        address: conversationContext.lastProperty,
+        lotPlan: conversationContext.lastLotplan,
+        siteAreaSqm: conversationContext.lastSiteArea,
+        zone: conversationContext.lastZone,
+        density: conversationContext.lastDensity,
+        heightM: conversationContext.lastHeight ? parseInt(conversationContext.lastHeight) : null
+      }
+    }, 'property_tool');
+  }
+
+  // Extract inputs from conversation and patch into draft
+  const extracted = extractInputsFromConversation(conversationHistory);
+  if (extracted) {
+    const inputPatch = {};
+    const rawPatch = {};
+
+    const fieldMap = {
+      purchasePriceRaw: 'purchasePrice',
+      grvRaw: 'grv',
+      constructionCostRaw: 'constructionCost',
+      lvrRaw: 'lvr',
+      interestRateRaw: 'interestRate',
+      timelineRaw: 'timelineMonths',
+      sellingCostsRaw: 'sellingCostsPercent',
+      gstSchemeRaw: 'gstScheme',
+      gstCostBaseRaw: 'gstCostBase'
+    };
+
+    for (const [rawKey, parsedKey] of Object.entries(fieldMap)) {
+      if (extracted[rawKey]) {
+        rawPatch[rawKey] = extracted[rawKey];
+        const parsedValue = parseInputValue(parsedKey, extracted[rawKey]);
+        if (parsedValue !== null && parsedValue !== undefined) {
+          inputPatch[parsedKey] = parsedValue;
+        }
+      }
+    }
+
+    // Handle gstCostBase special case: "same as acquisition" → use purchasePrice
+    if (extracted.gstCostBaseRaw) {
+      const lower = extracted.gstCostBaseRaw.toLowerCase();
+      if (lower.includes('same') || lower.includes('acquisition')) {
+        const pp = inputPatch.purchasePrice || draft.inputs.purchasePrice;
+        if (pp) inputPatch.gstCostBase = pp;
+      }
+    }
+
+    if (Object.keys(inputPatch).length > 0) {
+      patchDraft(conversationId, { inputs: inputPatch, rawInputs: rawPatch }, 'chat');
+    }
+  }
+
+  // Return the current draft state for frontend
+  const updatedDraft = getDraft(conversationId);
+  return updatedDraft;
+}
+
 /**
  * Quick intent classification - no LLM needed for obvious cases
  * Returns: 'conversational' | 'property' | 'analysis' | 'needs_context' | 'unclear'
@@ -552,13 +662,19 @@ Examples of good responses:
 }
 /**
  * Get planning advisory from Claude with function calling
+ *
+ * @param {string} userQuery - The user's message
+ * @param {Array} conversationHistory - Conversation history array
+ * @param {Function|null} sendProgress - SSE progress callback
+ * @param {string|null} conversationId - Unique conversation ID for draft store
  */
-export async function getAdvisory(userQuery, conversationHistory = [], sendProgress = null) {
+export async function getAdvisory(userQuery, conversationHistory = [], sendProgress = null, conversationId = null) {
   try {
     console.log('=====================================');
     console.log('[CLAUDE] New advisory request');
     console.log('[CLAUDE] User query:', userQuery);
     console.log('[CLAUDE] Conversation history length:', conversationHistory?.length || 0);
+    console.log('[CLAUDE] Conversation ID:', conversationId || '(none)');
     console.log('=====================================');
 
     // Extract context from conversation history
@@ -1529,48 +1645,80 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
         };
       }
       
-  // Handle quick feasibility calculation - NEW ENGINE
+  // Handle quick feasibility calculation — DRAFT-DRIVEN ENGINE
 else if (toolUse.name === 'calculate_quick_feasibility') {
-  console.log('[FEASO] ========== QUICK FEASIBILITY START ==========');
+  console.log('[FEASO] ========== QUICK FEASIBILITY START (DRAFT-DRIVEN) ==========');
   console.log('[FEASO] Raw inputs from Claude:', JSON.stringify(toolUse.input, null, 2));
 
   if (sendProgress) sendProgress('🔢 Parsing inputs...');
 
   const input = toolUse.input;
-  // FIX 4: Only use address explicitly provided by Claude from CURRENT conversation.
-  // Do NOT silently inject from conversationContext.lastProperty — that may contain
-  // a stale address from a previous session if frontend didn't clear conversationHistory.
-  const address = input.propertyAddress || '';
-  if (!address && conversationContext.lastProperty) {
-    console.log('[FEASO] Previous property in context:', conversationContext.lastProperty, '— NOT auto-injecting (must come from current conversation)');
-  }
+  const address = input.propertyAddress || conversationContext.lastProperty || '';
   const mode = input.mode || 'standard';
 
   try {
-    let result;
+    // STEP 1: Patch Claude's tool args into the draft store (if conversationId exists)
+    if (conversationId) {
+      const draftPatch = { inputs: {}, rawInputs: {} };
+      const fieldMap = {
+        purchasePriceRaw: 'purchasePrice',
+        grvRaw: 'grv',
+        constructionCostRaw: 'constructionCost',
+        lvrRaw: 'lvr',
+        interestRateRaw: 'interestRate',
+        timelineRaw: 'timelineMonths',
+        sellingCostsRaw: 'sellingCostsPercent',
+        gstSchemeRaw: 'gstScheme',
+        gstCostBaseRaw: 'gstCostBase'
+      };
 
-    // Build full conversation history (including current query) for extraction
+      for (const [rawKey, parsedKey] of Object.entries(fieldMap)) {
+        if (input[rawKey]) {
+          draftPatch.rawInputs[rawKey] = input[rawKey];
+          const parsed = parseInputValue(parsedKey, input[rawKey]);
+          if (parsed !== null && parsed !== undefined) {
+            draftPatch.inputs[parsedKey] = parsed;
+          }
+        }
+      }
+
+      // Handle gstCostBase "same as acquisition"
+      if (input.gstCostBaseRaw) {
+        const lower = input.gstCostBaseRaw.toLowerCase();
+        if (lower.includes('same') || lower.includes('acquisition')) {
+          const pp = draftPatch.inputs.purchasePrice || getDraft(conversationId)?.inputs?.purchasePrice;
+          if (pp) draftPatch.inputs.gstCostBase = pp;
+        }
+      }
+
+      if (address) {
+        draftPatch.property = { address };
+      }
+
+      patchDraft(conversationId, draftPatch, 'chat');
+      console.log('[FEASO] Draft patched with Claude tool args');
+    }
+
+    // STEP 2: Calculate — uses ONLY Claude's tool args + scoped conversation extraction
+    // Conversation extraction is now scoped to the most recent feaso session
+    let result;
     const fullHistory = [
       ...(conversationHistory || []),
       { role: 'user', content: userQuery }
     ];
 
     if (mode === 'residual') {
-      // Residual land value mode - user wants to know max land price
       if (sendProgress) sendProgress('📊 Calculating residual land value...');
       result = runResidualAnalysis(input, address, null, fullHistory);
     } else {
-      // Standard feasibility - pass conversation history so backend can extract REAL values
       if (sendProgress) sendProgress('📊 Crunching the numbers...');
       result = runQuickFeasibility(input, address, fullHistory);
     }
 
-    // Handle null/undefined result
     if (!result) {
       throw new Error('Feasibility engine returned no result');
     }
 
-    // Handle validation errors (missing required inputs)
     if (result.validationErrors) {
       console.log('[FEASO] Validation failed — missing inputs:', result.validationErrors);
       if (sendProgress) sendProgress('⚠️ Missing required inputs');
@@ -1585,12 +1733,22 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       if (sendProgress) sendProgress('✅ Feasibility calculated');
 
       console.log('[FEASO] ========== RESULTS ==========');
+      console.log('[FEASO] Address used:', address);
       console.log('[FEASO] Profit:', result.calculationData.profitability.grossProfit);
       console.log('[FEASO] Margin:', result.calculationData.profitability.profitMargin + '%');
       console.log('[FEASO] Viability:', result.calculationData.profitability.viabilityLabel);
       console.log('[FEASO] ========== END ==========');
 
-      // Return the pre-formatted response + structured data
+      // Update draft with results
+      if (conversationId) {
+        const draft = getDraft(conversationId);
+        if (draft) {
+          draft.results = result.calculationData;
+          draft.lastCalculatedAt = new Date().toISOString();
+          draft.status = 'calculated';
+        }
+      }
+
       toolResult = {
         success: true,
         feasibilityMode: 'results',
@@ -1620,6 +1778,9 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
         const buttonOptions = parseButtonOptions(toolResult.formattedResponse);
         const questionContext = buttonOptions ? detectQuestionContext(toolResult.formattedResponse, buttonOptions) : null;
 
+        // Include draft for progressive panel fill
+        const feasoDraft = conversationId ? getDraft(conversationId) : null;
+
         return {
           answer: toolResult.formattedResponse,
           propertyData: null,
@@ -1629,6 +1790,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
             calculationData: toolResult.calculationData,
             parsedInputs: toolResult.parsedInputs
           },
+          feasibilityPreFill: feasoDraft,
           buttonOptions: buttonOptions,
           questionContext: questionContext,
           usedTool: true,
@@ -1691,11 +1853,29 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
         if (nextTool.name === 'calculate_quick_feasibility') {
           console.log('[CLAUDE] Follow-up: calculate_quick_feasibility — bypassing');
           const fInput = nextTool.input;
-          // FIX 4: No auto-injection of previous address in follow-up path either
-          const fAddress = fInput.propertyAddress || '';
+          const fAddress = fInput.propertyAddress || conversationContext.lastProperty || '';
           const fMode = fInput.mode || 'standard';
 
           try {
+            // Patch draft with Claude's tool args (follow-up path)
+            if (conversationId) {
+              const draftPatch = { inputs: {}, rawInputs: {} };
+              const fFieldMap = {
+                purchasePriceRaw: 'purchasePrice', grvRaw: 'grv', constructionCostRaw: 'constructionCost',
+                lvrRaw: 'lvr', interestRateRaw: 'interestRate', timelineRaw: 'timelineMonths',
+                sellingCostsRaw: 'sellingCostsPercent', gstSchemeRaw: 'gstScheme', gstCostBaseRaw: 'gstCostBase'
+              };
+              for (const [rawKey, parsedKey] of Object.entries(fFieldMap)) {
+                if (fInput[rawKey]) {
+                  draftPatch.rawInputs[rawKey] = fInput[rawKey];
+                  const parsed = parseInputValue(parsedKey, fInput[rawKey]);
+                  if (parsed !== null && parsed !== undefined) draftPatch.inputs[parsedKey] = parsed;
+                }
+              }
+              if (fAddress) draftPatch.property = { address: fAddress };
+              patchDraft(conversationId, draftPatch, 'chat');
+            }
+
             const fullHistory = [...(conversationHistory || []), { role: 'user', content: userQuery }];
             let fResult;
             if (fMode === 'residual') {
@@ -1704,10 +1884,21 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
               fResult = runQuickFeasibility(fInput, fAddress, fullHistory);
             }
 
+            // Update draft with results
+            if (conversationId) {
+              const draft = getDraft(conversationId);
+              if (draft && fResult?.calculationData) {
+                draft.results = fResult.calculationData;
+                draft.lastCalculatedAt = new Date().toISOString();
+                draft.status = 'calculated';
+              }
+            }
+
             // Combine earlier text with feasibility response
             const preText = allTextParts.length > 0 ? allTextParts.join('\n\n') + '\n\n' : '';
             const fButtonOptions = parseButtonOptions(fResult.formattedResponse);
             const fQuestionContext = fButtonOptions ? detectQuestionContext(fResult.formattedResponse, fButtonOptions) : null;
+            const feasoDraft = conversationId ? getDraft(conversationId) : null;
 
             return {
               answer: preText + fResult.formattedResponse,
@@ -1718,6 +1909,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
                 calculationData: fResult.calculationData,
                 parsedInputs: fResult.parsedInputs
               },
+              feasibilityPreFill: feasoDraft,
               buttonOptions: fButtonOptions,
               questionContext: fQuestionContext,
               usedTool: true,
@@ -1803,11 +1995,38 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       const buttonOptions = parseButtonOptions(formattedAnswer);
       const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
 
+      // Build progressive feasibility pre-fill if in feaso flow
+      let feasibilityPreFill = null;
+      if (conversationId && (isFeasibility || detectFeasibilityFlow(conversationHistory))) {
+        feasibilityPreFill = buildFeasibilityPreFill(
+          [...(conversationHistory || []), { role: 'user', content: userQuery }],
+          conversationContext,
+          conversationId
+        );
+      }
+
+      // If property was just looked up, update the draft with property data
+      if (conversationId && latestPropertyData?.success && latestPropertyData?.property) {
+        const prop = latestPropertyData.property;
+        patchDraft(conversationId, {
+          property: {
+            address: prop.address,
+            lotPlan: prop.lotplan,
+            siteAreaSqm: prop.area ? parseInt(String(prop.area).replace(/[^\d]/g, '')) : null,
+            zone: prop.zone,
+            density: prop.density,
+            heightM: prop.height ? parseInt(String(prop.height).replace(/[^\d]/g, '')) : null,
+            overlays: prop.overlays
+          }
+        }, 'property_tool');
+      }
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: latestPropertyData,
         daData: latestDaData,
         feasibilityData: latestFeasibilityData,
+        feasibilityPreFill: feasibilityPreFill,
         buttonOptions: buttonOptions,
         questionContext: questionContext,
         usedTool: true,
@@ -1827,9 +2046,20 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
       const buttonOptions = parseButtonOptions(formattedAnswer);
       const questionContext = buttonOptions ? detectQuestionContext(formattedAnswer, buttonOptions) : null;
 
+      // Build progressive feasibility pre-fill if in feaso flow (no-tool path)
+      let feasibilityPreFill = null;
+      if (conversationId && detectFeasibilityFlow(conversationHistory)) {
+        feasibilityPreFill = buildFeasibilityPreFill(
+          [...(conversationHistory || []), { role: 'user', content: userQuery }],
+          conversationContext,
+          conversationId
+        );
+      }
+
       return {
         answer: formattedAnswer || 'Unable to generate response',
         propertyData: null,
+        feasibilityPreFill: feasibilityPreFill,
         buttonOptions: buttonOptions,
         questionContext: questionContext,
         usedTool: false
