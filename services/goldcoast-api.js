@@ -21,6 +21,8 @@ const VERIFIED_OVERLAY_LAYERS = [
 // Layer ID to parent group name mapping for full overlay descriptions
 // Maps individual layer IDs to their parent group's full descriptive name
 const OVERLAY_PARENT_NAMES = {
+  1: "Acid sulfate soils - Land at or below 5m AHD",
+  2: "Acid sulfate soils - Land at or below 20m AHD",
   4: "Airport environs - Airservices Australia aviation facilities",
   5: "Airport environs - Airservices Australia aviation facilities",
   7: "Airport environs - Australian Noise Exposure Forecast (ANEF) contour",
