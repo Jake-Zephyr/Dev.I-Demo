@@ -80,6 +80,11 @@ Every `complete` event from `/api/advise-stream` now includes an optional `feasi
         "totalHoldingAnnual": 31800,
         "totalHoldingProject": 0
       },
+      "timelineSplit": {
+        "leadInMonths": 0,
+        "constructionMonths": 0,
+        "sellingMonths": 0
+      },
       "status": "collecting",
       "results": null,
       "sourceMap": {
@@ -309,6 +314,19 @@ useEffect(() => {
       next.totalHoldingProject = String(preFill.holdingCosts.totalHoldingProject);
     }
 
+    // ======================================
+    // Timeline Split (auto-calculated by backend: 17% lead-in, 67% construction, remainder selling)
+    // ======================================
+    if (preFill.timelineSplit?.leadInMonths !== undefined) {
+      next.leadInMonths = String(preFill.timelineSplit.leadInMonths);
+    }
+    if (preFill.timelineSplit?.constructionMonths !== undefined) {
+      next.constructionMonths = String(preFill.timelineSplit.constructionMonths);
+    }
+    if (preFill.timelineSplit?.sellingMonths !== undefined) {
+      next.sellingMonths = String(preFill.timelineSplit.sellingMonths);
+    }
+
     return next;
   });
 
@@ -462,6 +480,18 @@ These are **auto-calculated by the backend** whenever `purchasePrice`, `construc
 - $5,000,001+: $75,000 + 2.0% above $5M
 
 **Example:** Purchase price $1,200,000 → Land tax = $1,450 + ($850,000 x 0.017) = $15,900/yr
+
+## Timeline Split Field Mapping
+
+Auto-calculated by the backend when `timelineMonths` is provided. Uses the same split ratios as the quick feasibility engine.
+
+| Phase | Draft Path | Calculator Field | Calculation |
+|-------|-----------|-----------------|------------|
+| Lead-in | `timelineSplit.leadInMonths` | `leadInMonths` | 17% of total |
+| Construction | `timelineSplit.constructionMonths` | `constructionMonths` | 67% of total |
+| Selling | `timelineSplit.sellingMonths` | `sellingMonths` | Remainder |
+
+**Example:** 18 months total → Lead-in: 3, Construction: 12, Selling: 3
 
 ---
 

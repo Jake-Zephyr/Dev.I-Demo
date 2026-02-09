@@ -96,6 +96,13 @@ function createEmptyDraft(conversationId) {
       totalHoldingProject: 0    // Prorated for timeline (months / 12)
     },
 
+    // Computed timeline split — recalculated whenever timelineMonths changes
+    timelineSplit: {
+      leadInMonths: 0,          // 17% of total
+      constructionMonths: 0,    // 67% of total
+      sellingMonths: 0          // remainder
+    },
+
     status: 'collecting',  // 'collecting' | 'ready_to_calculate' | 'calculated'
     results: null,
     lastCalculatedAt: null,
@@ -210,7 +217,7 @@ export function patchDraft(conversationId, patch, source = 'chat') {
 
   // Recompute holding costs whenever inputs or assumptions change
   if (patch.inputs || patch.assumptions) {
-    recomputeHoldingCosts(draft);
+    recomputeDerivedFields(draft);
   }
 
   // Update status
@@ -340,15 +347,16 @@ function calculateLandTaxQLD(landValue) {
 }
 
 /**
- * Recompute holdingCosts on the draft from current inputs + assumptions.
- * Called automatically after every patchDraft.
+ * Recompute holdingCosts and timelineSplit on the draft from current inputs + assumptions.
+ * Called automatically after every patchDraft when inputs or assumptions change.
  */
-function recomputeHoldingCosts(draft) {
+function recomputeDerivedFields(draft) {
   const landValue = draft.inputs.purchasePrice || 0;
   const constructionCost = draft.inputs.constructionCost || 0;
   const timelineMonths = draft.inputs.timelineMonths || 0;
   const insurancePct = draft.assumptions.insurancePercent ?? 0.3;
 
+  // Holding costs
   const landTaxAnnual = Math.round(calculateLandTaxQLD(landValue));
   const councilRatesAnnual = draft.assumptions.councilRatesAnnual || 5000;
   const waterRatesAnnual = draft.assumptions.waterRatesAnnual || 1400;
@@ -366,6 +374,14 @@ function recomputeHoldingCosts(draft) {
     totalHoldingAnnual,
     totalHoldingProject
   };
+
+  // Timeline split (matches quick-feasibility-engine.js splitTimeline)
+  if (timelineMonths > 0) {
+    const leadInMonths = Math.round(timelineMonths * 0.17);
+    const constructionMonths = Math.round(timelineMonths * 0.67);
+    const sellingMonths = timelineMonths - leadInMonths - constructionMonths;
+    draft.timelineSplit = { leadInMonths, constructionMonths, sellingMonths };
+  }
 }
 
 // ============================================================

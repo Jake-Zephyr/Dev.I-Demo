@@ -463,8 +463,11 @@ function detectFeasibilityFlow(conversationHistory) {
  * @returns {Object|null} Pre-fill data for the frontend calculator
  */
 function buildFeasibilityPreFill(conversationHistory, conversationContext, conversationId) {
+  if (!conversationId) return null;
+
   // Get or create draft
   const draft = getDraft(conversationId);
+  if (!draft) return null;
 
   // Always include property data from context
   if (conversationContext.lastProperty && !draft.property.address) {
