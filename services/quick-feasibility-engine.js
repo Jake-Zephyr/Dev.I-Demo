@@ -672,35 +672,69 @@ This means if you can acquire the site for less than ${fmtCurrency(residual.resi
 
 
 // ============================================================
-// SECTION 5: CONVERSATION HISTORY EXTRACTOR
+// SECTION 5: CONVERSATION HISTORY EXTRACTOR (SCOPED)
 // ============================================================
 
 /**
- * Extract feasibility inputs directly from conversation history.
+ * Extract feasibility inputs from conversation history.
  *
- * This is the NUCLEAR OPTION - we don't trust Claude to pass values correctly.
- * Instead, we scan the actual conversation to find what the user typed.
+ * CRITICAL FIX: Only scans messages from the MOST RECENT feasibility session.
+ * Previous versions scanned the entire history, which caused stale data from
+ * earlier property analyses to contaminate the current feasibility.
  *
- * The conversation follows this pattern:
- *   Assistant: "What's the purchase price?"
- *   User: "$10M"
- *   Assistant: "What's the GRV?"
- *   User: "$45M"
- *   ...etc
- *
- * We match the assistant's question to determine what the user's next message means.
+ * The fix:
+ * 1. Find the LAST feasibility start signal (user says "feaso", "feasibility", "quick", etc.)
+ * 2. Only extract from messages AFTER that point
+ * 3. Use label-anchored matching (not position-based)
+ * 4. Latest answer wins for each field
  */
 export function extractInputsFromConversation(conversationHistory) {
   if (!conversationHistory || conversationHistory.length === 0) {
     return null;
   }
 
+  // STEP 1: Find the index where the MOST RECENT feasibility session started.
+  // Scan backwards to find the last "run a feaso" / "quick" / "feasibility" trigger.
+  let feasoStartIndex = 0;
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    const msg = conversationHistory[i];
+    const content = String(msg.content || '').toLowerCase();
+
+    // Detect feasibility start signals
+    const isFeasoStart = (
+      (msg.role === 'user' && (
+        content.includes('feaso') ||
+        content.includes('feasibility') ||
+        content.includes('run the numbers') ||
+        content.includes('crunch the numbers')
+      )) ||
+      (msg.role === 'assistant' && (
+        content.includes('quick feaso or detailed') ||
+        content.includes('quick feasibility') ||
+        content.includes('starting quick feasibility') ||
+        content.includes('let\'s run a feasibility') ||
+        content.includes('acquisition cost') ||
+        content.includes('purchase price') && content.includes('for example')
+      ))
+    );
+
+    if (isFeasoStart) {
+      feasoStartIndex = i;
+      console.log(`[CONV-EXTRACT] Feasibility session start found at message index ${i}: "${content.substring(0, 60)}..."`);
+      break;
+    }
+  }
+
+  // Only scan messages from feasoStartIndex onwards
+  const scopedHistory = conversationHistory.slice(feasoStartIndex);
+  console.log(`[CONV-EXTRACT] Scanning ${scopedHistory.length} messages (from index ${feasoStartIndex} of ${conversationHistory.length} total)`);
+
   const extracted = {};
 
-  // Walk through conversation in pairs: look at assistant message, then user response
-  for (let i = 0; i < conversationHistory.length - 1; i++) {
-    const msg = conversationHistory[i];
-    const nextMsg = conversationHistory[i + 1];
+  // Walk through scoped conversation in pairs: assistant question → user answer
+  for (let i = 0; i < scopedHistory.length - 1; i++) {
+    const msg = scopedHistory[i];
+    const nextMsg = scopedHistory[i + 1];
 
     // We only care about assistant question → user answer pairs
     if (msg.role !== 'assistant' || nextMsg.role !== 'user') continue;
@@ -786,12 +820,12 @@ export function extractInputsFromConversation(conversationHistory) {
       if (answer.toLowerCase() === 'custom') {
         // Look for next user message after the follow-up assistant question
         // i = assistant question, i+1 = user "Custom", i+2 = assistant follow-up, i+3 = user actual answer
-        if (i + 3 < conversationHistory.length && conversationHistory[i + 3].role === 'user') {
-          extracted.interestRateRaw = String(conversationHistory[i + 3].content).trim();
+        if (i + 3 < scopedHistory.length && scopedHistory[i + 3].role === 'user') {
+          extracted.interestRateRaw = String(scopedHistory[i + 3].content).trim();
           console.log('[CONV-EXTRACT] Interest rate (from custom follow-up):', extracted.interestRateRaw);
-        } else if (i + 2 < conversationHistory.length && conversationHistory[i + 2].role === 'user') {
+        } else if (i + 2 < scopedHistory.length && scopedHistory[i + 2].role === 'user') {
           // Fallback: maybe no assistant follow-up, user just typed the rate directly
-          extracted.interestRateRaw = String(conversationHistory[i + 2].content).trim();
+          extracted.interestRateRaw = String(scopedHistory[i + 2].content).trim();
           console.log('[CONV-EXTRACT] Interest rate (from direct follow-up):', extracted.interestRateRaw);
         } else {
           // Last resort: don't set - let Claude's value be used as fallback
@@ -823,11 +857,11 @@ export function extractInputsFromConversation(conversationHistory) {
     ) {
       if (answer.toLowerCase() === 'custom') {
         // Same pattern: i+3 = user answer after follow-up question
-        if (i + 3 < conversationHistory.length && conversationHistory[i + 3].role === 'user') {
-          extracted.sellingCostsRaw = String(conversationHistory[i + 3].content).trim();
+        if (i + 3 < scopedHistory.length && scopedHistory[i + 3].role === 'user') {
+          extracted.sellingCostsRaw = String(scopedHistory[i + 3].content).trim();
           console.log('[CONV-EXTRACT] Selling costs (from custom follow-up):', extracted.sellingCostsRaw);
-        } else if (i + 2 < conversationHistory.length && conversationHistory[i + 2].role === 'user') {
-          extracted.sellingCostsRaw = String(conversationHistory[i + 2].content).trim();
+        } else if (i + 2 < scopedHistory.length && scopedHistory[i + 2].role === 'user') {
+          extracted.sellingCostsRaw = String(scopedHistory[i + 2].content).trim();
           console.log('[CONV-EXTRACT] Selling costs (from direct follow-up):', extracted.sellingCostsRaw);
         }
       } else {
@@ -850,11 +884,12 @@ export function extractInputsFromConversation(conversationHistory) {
   }
 
   // ============================================================
-  // PHASE 2: Scan ALL user messages for inline values
+  // PHASE 2: Scan SCOPED user messages for inline values
   // Catches cases like: "buying 70 nobby parade for $2m... GR 10m... cost $3.5m to build"
   // This handles when user provides values in their first message, not in Q&A format
+  // CRITICAL: Only scans scoped messages (after feasibility start), NOT full history
   // ============================================================
-  for (const msg of conversationHistory) {
+  for (const msg of scopedHistory) {
     if (msg.role !== 'user') continue;
     const text = String(msg.content || '');
     if (!text || text.length < 10) continue; // Skip short answers like "80%" or "yes"
