@@ -211,7 +211,46 @@ export async function scrapeGoldCoastDAs(address, monthsBack = 12) {
         if (statusMatch) {
           app.status = statusMatch[1].replace(/<[^>]+>/g, '').trim().replace(/\s+/g, ' ');
         }
-        
+
+        // Navigate to documents tab and find Stamped Approved Plans
+        try {
+          const docsTab = await page.$('a:has-text("Documents")');
+          if (docsTab) {
+            await docsTab.click();
+            await page.waitForLoadState('networkidle', { timeout: 15000 });
+          }
+
+          // Look for Stamped Approved Plans in the documents table
+          const stampedDoc = await page.$$eval(
+            'table tr',
+            (rows) => {
+              for (const row of rows) {
+                const nameCell = row.querySelector('td:nth-child(2)');
+                if (!nameCell) continue;
+                const name = nameCell.innerText.trim();
+                if (/stamped.*(approved|approval).*plan|stamped.*plan/i.test(name)) {
+                  const linkCell = row.querySelector('td:nth-child(1) a');
+                  return {
+                    name,
+                    href: linkCell ? linkCell.href : null,
+                    text: linkCell ? linkCell.innerText.trim() : null
+                  };
+                }
+              }
+              return null;
+            }
+          );
+
+          if (stampedDoc) {
+            app.stamped_approved_plans = stampedDoc;
+            console.log('[PDONLINE] ✅ Found Stamped Approved Plans for', app.application_number, ':', stampedDoc.text);
+          } else {
+            console.log('[PDONLINE] No Stamped Approved Plans found for', app.application_number);
+          }
+        } catch (docErr) {
+          console.log('[PDONLINE] Could not fetch documents for', app.application_number, ':', docErr.message);
+        }
+
         app.details_fetched = true;
         console.log('[PDONLINE] ✅ Fetched details for', app.application_number);
         

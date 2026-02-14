@@ -330,6 +330,79 @@ app.post('/api/nearby-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (re
   }
 });
 
+// ===== DA DOCUMENTS: Decision Notice + Stamped Approved Plans + Claude Analysis =====
+app.post('/api/da-documents', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { applicationNumber, documents = ['decision_notice', 'stamped_plans'], analyze = true } = req.body;
+
+    if (!applicationNumber) {
+      return res.status(400).json({ success: false, error: 'applicationNumber is required' });
+    }
+
+    console.log('[DA-DOCS] Request for:', applicationNumber, '| docs:', documents, '| analyze:', analyze);
+
+    const { getDecisionNotice, getStampedApprovedPlans, analyzeDADocument } = await import('./services/pdonline-documents.js');
+
+    const result = { success: true, applicationNumber, documents: {} };
+
+    // Download Decision Notice if requested
+    if (documents.includes('decision_notice')) {
+      console.log('[DA-DOCS] Downloading Decision Notice...');
+      try {
+        const dnResult = await getDecisionNotice(applicationNumber, '/tmp');
+        result.documents.decision_notice = {
+          success: dnResult.success,
+          filename: dnResult.filename || null,
+          fileSizeKB: dnResult.fileSizeKB || null,
+          isSigned: dnResult.isSigned || false,
+          documentName: dnResult.documentName || null,
+          error: dnResult.error || null,
+          analysis: null
+        };
+
+        if (dnResult.success && analyze && dnResult.pdfBuffer) {
+          console.log('[DA-DOCS] Analysing Decision Notice with Claude...');
+          result.documents.decision_notice.analysis = await analyzeDADocument(dnResult.pdfBuffer, 'decision_notice', applicationNumber);
+        }
+      } catch (err) {
+        console.error('[DA-DOCS] Decision Notice error:', err.message);
+        result.documents.decision_notice = { success: false, error: err.message };
+      }
+    }
+
+    // Download Stamped Approved Plans if requested
+    if (documents.includes('stamped_plans')) {
+      console.log('[DA-DOCS] Downloading Stamped Approved Plans...');
+      try {
+        const spResult = await getStampedApprovedPlans(applicationNumber, '/tmp');
+        result.documents.stamped_plans = {
+          success: spResult.success,
+          filename: spResult.filename || null,
+          fileSizeKB: spResult.fileSizeKB || null,
+          documentName: spResult.documentName || null,
+          error: spResult.error || null,
+          analysis: null
+        };
+
+        if (spResult.success && analyze && spResult.pdfBuffer) {
+          console.log('[DA-DOCS] Analysing Stamped Approved Plans with Claude...');
+          result.documents.stamped_plans.analysis = await analyzeDADocument(spResult.pdfBuffer, 'stamped_plans', applicationNumber);
+        }
+      } catch (err) {
+        console.error('[DA-DOCS] Stamped Plans error:', err.message);
+        result.documents.stamped_plans = { success: false, error: err.message };
+      }
+    }
+
+    console.log('[DA-DOCS] ✅ Complete for', applicationNumber);
+    res.json(result);
+
+  } catch (error) {
+    console.error('[DA-DOCS ERROR]', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ===== NEW: PDONLINE DA SEARCH =====
 app.post('/api/pdonline-das', apiKeyAuthMiddleware, rateLimitMiddleware, async (req, res) => {
   try {
@@ -929,6 +1002,7 @@ app.listen(PORT, () => {
   console.log(`   GET  /api/stamp-duty/states  💰`);
   console.log(`   POST /api/nearby-das  📍`);
   console.log(`   POST /api/pdonline-das  🏗️`);
+  console.log(`   POST /api/da-documents  📄 NEW`);
   console.log(`   POST /api/generate-visualization  🎨`);
   console.log(`   POST /api/generate-chat-title  💬`);
   console.log(`   GET  /api/feaso/draft  📊 NEW`);
