@@ -10,6 +10,28 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 });
 
+// Simple cache for planning scheme search results (avoids redundant Pinecone calls)
+const planningSchemeCache = new Map();
+const PLANNING_CACHE_TTL = 300000; // 5 min
+
+function getCachedPlanningScheme(key) {
+  const entry = planningSchemeCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.ts > PLANNING_CACHE_TTL) {
+    planningSchemeCache.delete(key);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function setCachedPlanningScheme(key, value) {
+  if (planningSchemeCache.size >= 100) {
+    const oldest = planningSchemeCache.keys().next().value;
+    planningSchemeCache.delete(oldest);
+  }
+  planningSchemeCache.set(key, { value, ts: Date.now() });
+}
+
 /**
  * Strip markdown formatting from Claude's response
  * PRESERVES bullet points (•) and newlines for structured content
@@ -1370,8 +1392,15 @@ ${contextSummary}`;
 
         if (sendProgress) sendProgress('✓ Located property - checking zoning controls...');
         console.log('[CLAUDE] Searching planning scheme database...');
-        const planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
-        console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
+        const planningCacheKey = `ps:${toolUse.input.query.toLowerCase().trim()}`;
+        let planningContext = getCachedPlanningScheme(planningCacheKey);
+        if (planningContext !== undefined) {
+          console.log(`[CLAUDE] Planning scheme cache hit (${planningContext.length} sections)`);
+        } else {
+          planningContext = await searchPlanningScheme(toolUse.input.query, propertyData);
+          setCachedPlanningScheme(planningCacheKey, planningContext);
+          console.log(`[CLAUDE] Found ${planningContext.length} relevant planning sections`);
+        }
 
         const zoneInfo = propertyData.property?.zone || 'zone';
         if (sendProgress) sendProgress(`✓ Found ${zoneInfo} - checking overlays...`);

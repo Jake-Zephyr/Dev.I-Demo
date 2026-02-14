@@ -1,7 +1,7 @@
 // server.js
 import express from 'express';
 import cors from 'cors';
-import { scrapeProperty } from './services/goldcoast-api.js';
+import { scrapeProperty, getCacheStats, clearPropertyCache } from './services/goldcoast-api.js';
 import { getAdvisory } from './services/claude.js';
 import { 
   rateLimitMiddleware, 
@@ -85,6 +85,18 @@ app.get('/api/usage-stats', (req, res) => {
     stats,
     timestamp: new Date().toISOString()
   });
+});
+
+// Cache stats endpoint
+app.get('/api/cache-stats', (req, res) => {
+  const stats = getCacheStats();
+  res.json({ success: true, cache: stats, timestamp: new Date().toISOString() });
+});
+
+// Cache clear endpoint
+app.post('/api/cache-clear', (req, res) => {
+  clearPropertyCache();
+  res.json({ success: true, message: 'All caches cleared' });
 });
 
 // Direct scraper endpoint

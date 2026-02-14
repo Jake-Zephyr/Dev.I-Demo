@@ -40,6 +40,56 @@ const OVERLAY_PARENT_NAMES = {
   25: "Airport environs - wildlife hazard buffer zones"
 };
 
+// ============================================================
+// In-memory cache to avoid redundant ArcGIS / geocode API calls
+// ============================================================
+class SimpleCache {
+  constructor(ttlMs = 300000, maxSize = 200) {
+    this.cache = new Map();
+    this.ttlMs = ttlMs;
+    this.maxSize = maxSize;
+    this.hits = 0;
+    this.misses = 0;
+  }
+
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) { this.misses++; return undefined; }
+    if (Date.now() - entry.ts > this.ttlMs) {
+      this.cache.delete(key);
+      this.misses++;
+      return undefined;
+    }
+    this.hits++;
+    return entry.value;
+  }
+
+  set(key, value) {
+    if (this.cache.size >= this.maxSize) {
+      const oldest = this.cache.keys().next().value;
+      this.cache.delete(oldest);
+    }
+    this.cache.set(key, { value, ts: Date.now() });
+  }
+
+  get stats() {
+    return { size: this.cache.size, hits: this.hits, misses: this.misses };
+  }
+
+  clear() { this.cache.clear(); this.hits = 0; this.misses = 0; }
+}
+
+function geometryCacheKey(prefix, geometry) {
+  const ring = geometry.rings?.[0];
+  if (!ring || ring.length === 0) return `${prefix}:unknown`;
+  const sample = ring.slice(0, 3).map(c => `${Math.round(c[0])},${Math.round(c[1])}`).join('|');
+  return `${prefix}:${sample}`;
+}
+
+const propertyCache = new SimpleCache(300000);   // 5 min for full property results
+const geocodeCache = new SimpleCache(600000);    // 10 min for geocode results
+const arcgisCache = new SimpleCache(300000);     // 5 min for ArcGIS identify calls
+
 /**
  * Extract street name from an address for comparison
  */
@@ -207,7 +257,14 @@ async function getAllLotsInPlan(planNumber) {
  */
 export async function geocodeAddress(address) {
   console.log(`[API] Geocoding: ${address}`);
-  
+
+  const cacheKey = `geo:${address.toLowerCase().trim()}`;
+  const cached = geocodeCache.get(cacheKey);
+  if (cached) {
+    console.log(`[API] ✓ Geocode cache hit for: ${address}`);
+    return cached;
+  }
+
   const goldCoastSuburbs = [
     'mermaid waters', 'burleigh heads', 'palm beach', 'surfers paradise',
     'broadbeach', 'southport', 'main beach', 'robina', 'varsity lakes',
@@ -267,12 +324,14 @@ export async function geocodeAddress(address) {
       if (goldCoastResults.length === 1) {
         console.log(`[API] Single match found, using it`);
         const result = goldCoastResults[0];
-        return {
+        const geoResult = {
           lat: parseFloat(result.lat),
           lon: parseFloat(result.lon),
           confidence: 80,
           matchedAddress: result.display_name
         };
+        geocodeCache.set(cacheKey, geoResult);
+        return geoResult;
       }
     } catch (error) {
       if (error.message === 'DISAMBIGUATION_NEEDED') {
@@ -309,12 +368,14 @@ export async function geocodeAddress(address) {
           const [lon, lat] = proj4('EPSG:3857', 'EPSG:4326', [xMercator, yMercator]);
           
           console.log(`[API] ✓ QLD Geocoder matched: ${candidateAddress}`);
-          return { 
-            lat, 
-            lon, 
+          const geoResult = {
+            lat,
+            lon,
             confidence: candidate.score,
             matchedAddress: candidateAddress
           };
+          geocodeCache.set(cacheKey, geoResult);
+          return geoResult;
         }
       }
       
@@ -365,12 +426,14 @@ export async function geocodeAddress(address) {
           const lon = parseFloat(result.lon);
           
           console.log(`[API] ✓ Nominatim matched: ${result.display_name}`);
-          return { 
-            lat, 
-            lon, 
+          const geoResult = {
+            lat,
+            lon,
             confidence: 85,
             matchedAddress: result.display_name
           };
+          geocodeCache.set(cacheKey, geoResult);
+          return geoResult;
         }
       }
       
@@ -648,10 +711,17 @@ function getBoundingBox(rings) {
  * Get zone information using lot geometry
  */
 async function getZone(lotGeometry) {
+  const cacheKey = geometryCacheKey('zone', lotGeometry);
+  const cached = arcgisCache.get(cacheKey);
+  if (cached !== undefined) {
+    console.log(`[API] ✓ Zone cache hit`);
+    return cached;
+  }
+
   console.log(`[API] Querying zone...`);
-  
+
   const bbox = getBoundingBox(lotGeometry.rings);
-  
+
   const url = `${SERVICES.ZONE}/identify`;
   const params = new URLSearchParams({
     f: 'json',
@@ -670,10 +740,12 @@ async function getZone(lotGeometry) {
   
   if (data.results?.[0]) {
     console.log(`[API] ✓ Zone: ${data.results[0].attributes.Zone}`);
+    arcgisCache.set(cacheKey, data.results[0].attributes);
     return data.results[0].attributes;
   }
-  
+
   console.log(`[API] ⚠️ No zone data found`);
+  arcgisCache.set(cacheKey, null);
   return null;
 }
 
@@ -681,10 +753,17 @@ async function getZone(lotGeometry) {
  * Get building height information using lot geometry
  */
 async function getHeight(lotGeometry) {
+  const cacheKey = geometryCacheKey('height', lotGeometry);
+  const cached = arcgisCache.get(cacheKey);
+  if (cached !== undefined) {
+    console.log(`[API] ✓ Height cache hit`);
+    return cached;
+  }
+
   console.log(`[API] Querying height...`);
-  
+
   const bbox = getBoundingBox(lotGeometry.rings);
-  
+
   const url = `${SERVICES.HEIGHT}/identify`;
   const params = new URLSearchParams({
     f: 'json',
@@ -704,10 +783,12 @@ async function getHeight(lotGeometry) {
   if (data.results?.[0]) {
     const height = data.results[0].attributes['Height (m)'];
     console.log(`[API] ✓ Height: ${height || 'No restriction'}`);
+    arcgisCache.set(cacheKey, data.results[0].attributes);
     return data.results[0].attributes;
   }
-  
+
   console.log(`[API] ⚠️ No height data found`);
+  arcgisCache.set(cacheKey, null);
   return null;
 }
 
@@ -715,8 +796,15 @@ async function getHeight(lotGeometry) {
  * Get overlays using ACTUAL LOT GEOMETRY
  */
 async function getOverlays(lotGeometry) {
+  const cacheKey = geometryCacheKey('overlays', lotGeometry);
+  const cached = arcgisCache.get(cacheKey);
+  if (cached !== undefined) {
+    console.log(`[API] ✓ Overlays cache hit`);
+    return cached;
+  }
+
   console.log(`[API] Querying overlays using actual lot geometry (${VERIFIED_OVERLAY_LAYERS.length} layers)...`);
-  
+
   const bbox = getBoundingBox(lotGeometry.rings);
   const layers = VERIFIED_OVERLAY_LAYERS.join(',');
   
@@ -738,10 +826,12 @@ async function getOverlays(lotGeometry) {
   
   if (data.results?.length > 0) {
     console.log(`[API] ✓ Found ${data.results.length} overlays`);
+    arcgisCache.set(cacheKey, data.results);
     return data.results;
   }
-  
+
   console.log(`[API] ⚠️ No overlays found`);
+  arcgisCache.set(cacheKey, []);
   return [];
 }
 
@@ -751,6 +841,16 @@ async function getOverlays(lotGeometry) {
 export async function scrapeProperty(query, sendProgress = null) {
   const startTime = Date.now();
   console.log(`[API] Starting property lookup: ${query}`);
+
+  // Check property cache first
+  const cacheKey = `prop:${query.toLowerCase().trim()}`;
+  const cached = propertyCache.get(cacheKey);
+  if (cached) {
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`[API] ✓ Property cache hit for: ${query} (${elapsed}s)`);
+    if (sendProgress) sendProgress(`✅ Property data retrieved (cached)`);
+    return cached;
+  }
 
   try {
     const { type, value } = detectQueryType(query);
@@ -965,7 +1065,7 @@ export async function scrapeProperty(query, sendProgress = null) {
       console.log(`[API] Strata title with ${numberOfUnits} units registered`);
     }
     
-    return {
+    const result = {
       success: true,
       property: {
         lotplan: cadastre.LOTPLAN,
@@ -1000,6 +1100,14 @@ export async function scrapeProperty(query, sendProgress = null) {
       apiVersion: '2.6-strata-total-area',
       timeTaken: elapsed
     };
+
+    // Cache successful result (also by lotplan for cross-reference lookups)
+    propertyCache.set(cacheKey, result);
+    if (result.property?.lotplan) {
+      propertyCache.set(`prop:${result.property.lotplan.toLowerCase()}`, result);
+    }
+
+    return result;
     
   } catch (error) {
     // Handle disambiguation requests
@@ -1089,4 +1197,19 @@ export async function scrapePropertyOverlaysOnly(address, sendProgress = null) {
   }
 }
 
-export default { scrapeProperty, scrapePropertyOverlaysOnly, geocodeAddress };
+export function clearPropertyCache() {
+  propertyCache.clear();
+  geocodeCache.clear();
+  arcgisCache.clear();
+  console.log('[API] All caches cleared');
+}
+
+export function getCacheStats() {
+  return {
+    property: propertyCache.stats,
+    geocode: geocodeCache.stats,
+    arcgis: arcgisCache.stats
+  };
+}
+
+export default { scrapeProperty, scrapePropertyOverlaysOnly, geocodeAddress, clearPropertyCache, getCacheStats };
