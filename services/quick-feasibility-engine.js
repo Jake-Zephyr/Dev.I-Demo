@@ -219,7 +219,7 @@ export function parseAllInputs(rawInputs) {
   const lvr = parseLVR(rawInputs.lvrRaw);
   const interestRate = parsePercentage(rawInputs.interestRateRaw);
   const timelineMonths = parseTimeline(rawInputs.timelineRaw);
-  const sellingCostsPercent = parsePercentage(rawInputs.sellingCostsRaw);
+  const sellingCostsPercent = rawInputs.sellingCostsRaw ? parsePercentage(rawInputs.sellingCostsRaw) : 3; // Default 3%
   const gstScheme = parseGSTScheme(rawInputs.gstSchemeRaw);
   const gstCostBase = parseGSTCostBase(rawInputs.gstCostBaseRaw, landValue);
 
@@ -278,11 +278,13 @@ function calculateTargetMargin(grvExclGST) {
 
 /**
  * Split timeline into phases
+ * NOTE: Selling period is 0 — we assume sell on completion.
+ * The entire timeline is split between lead-in and construction only.
  */
 function splitTimeline(totalMonths) {
-  const leadIn = Math.round(totalMonths * 0.17);
-  const construction = Math.round(totalMonths * 0.67);
-  const selling = totalMonths - leadIn - construction;
+  const leadIn = Math.round(totalMonths * 0.2);
+  const construction = totalMonths - leadIn;
+  const selling = 0; // Sell on completion
   return { leadIn, construction, selling, total: totalMonths };
 }
 
@@ -570,15 +572,21 @@ export function formatFeasibilityResponse(calc, address) {
     commentary = `This project shows a negative return at ${profitability.profitMargin.toFixed(1)}%. The numbers don't work at these inputs. Consider whether the land price, construction costs, or revenue assumptions can be adjusted.`;
   }
 
+  // Finance line - show "Self funded (no debt)" if LVR is 0
+  const financeLine = inputs.lvr === 0
+    ? `• Finance: Self funded (no debt) | Timeline: ${inputs.timelineMonths} months`
+    : `• LVR: ${inputs.lvr}% | Interest: ${inputs.interestRate}% p.a. | Timeline: ${inputs.timelineMonths} months`;
+
   const response = `QUICK FEASIBILITY ANALYSIS${address ? `: ${address}` : ''}
 
 Inputs Received:
 • Land Acquisition: ${fmtFull(inputs.landValue)}
 • Target GRV (inc GST): ${fmtFull(inputs.grvTotal)}
 • Construction Cost: ${fmtFull(inputs.constructionWithContingency)} (inc ${inputs.appliedContingency}% contingency)
-• LVR: ${inputs.lvr}% | Interest: ${inputs.interestRate}% p.a. | Timeline: ${inputs.timelineMonths} months
+${financeLine}
 • Selling Costs: ${inputs.sellingCostsPercent}%
 • GST: ${gstLabel}
+• Sell on completion (0 month selling period)
 
 Revenue (Including GST):
 • Gross Revenue (inc GST): ${fmtFull(revenue.grvInclGST)}
@@ -607,10 +615,11 @@ ${residualSection}
 
 Assumptions:
 • Contingency: ${inputs.appliedContingency}% ${inputs.appliedContingency === 5 && !inputs.constructionBreakdown?.contingencyPercent ? '(added — not specified by user)' : '(as specified)'}
+• Selling Costs: ${inputs.sellingCostsPercent}% (agent fees + marketing + legal)
+• Sell on completion assumed (0 month selling period)
 • Finance Draw: Land at settlement + construction drawn progressively (~50% avg)
 • Holding Costs: Land tax ${fmtFull(holdingBreakdown.landTaxYearly)}/yr + council rates $${holdingBreakdown.councilRatesAnnual.toLocaleString()}/yr + water $${holdingBreakdown.waterRatesAnnual.toLocaleString()}/yr
 • Stamp Duty: QLD rates for investment/commercial property
-• Statutory and council fees are GST-free
 
 ${commentary}
 
@@ -636,6 +645,11 @@ export function formatResidualResponse(calc, address, targetMarginOverride) {
     ? `Margin Scheme (cost base: ${fmtCurrency(inputs.gstCostBase)})`
     : 'Fully Taxed';
 
+  // Finance line for residual
+  const resFinanceLine = inputs.lvr === 0
+    ? `• Finance: Self funded (no debt) | Timeline: ${inputs.timelineMonths} months`
+    : `• LVR: ${inputs.lvr}% | Interest: ${inputs.interestRate}% p.a. | Timeline: ${inputs.timelineMonths} months`;
+
   const response = `RESIDUAL LAND VALUE ANALYSIS${address ? `: ${address}` : ''}
 
 This analysis calculates the maximum you can pay for the land while achieving your target developer's margin.
@@ -643,9 +657,10 @@ This analysis calculates the maximum you can pay for the land while achieving yo
 Inputs:
 • Target GRV (inc GST): ${fmtFull(inputs.grvTotal)}
 • Construction Cost: ${fmtFull(inputs.constructionWithContingency)} (inc ${inputs.appliedContingency}% contingency)
-• LVR: ${inputs.lvr}% | Interest: ${inputs.interestRate}% p.a. | Timeline: ${inputs.timelineMonths} months
+${resFinanceLine}
 • Selling Costs: ${inputs.sellingCostsPercent}%
 • GST: ${gstLabel}
+• Sell on completion (0 month selling period)
 • Target Developer's Margin: ${targetMargin}%
 
 Revenue:
@@ -1015,9 +1030,9 @@ export function extractInputsFromConversation(conversationHistory) {
     }
   }
 
-  // Count how many inputs we found
+  // Count how many inputs we found (sellingCostsRaw excluded — always defaults to 3%)
   const fields = ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw',
-    'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw'];
+    'interestRateRaw', 'timelineRaw', 'gstSchemeRaw'];
   const foundCount = fields.filter(f => extracted[f]).length;
 
   console.log(`[CONV-EXTRACT] Found ${foundCount}/${fields.length} inputs from conversation history`);

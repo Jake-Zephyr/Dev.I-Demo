@@ -25,9 +25,11 @@ export function getDefaultAssumptions() {
     profFeesPercent: 8,
     statutoryFeesPercent: 2,
     pmFeesPercent: 3,
+    sellingCostsPercent: 3,       // Fixed 3% (agent + marketing + legal)
     agentFeesPercent: 1.5,
     marketingPercent: 1.2,
     legalSellingPercent: 0.3,
+    sellOnCompletion: true,       // Sell all on completion (0 month selling period)
     interestRateDefault: 6.75,
     loanLVRDefault: 65,
     councilRatesAnnual: 5000,
@@ -66,7 +68,8 @@ function createEmptyDraft(conversationId) {
       lvr: null,
       interestRate: null,
       timelineMonths: null,
-      sellingCostsPercent: null,
+      sellingCostsPercent: 3,       // Default 3% — not asked during Q&A
+      sellOnCompletion: true,       // Sell all on completion (0 month selling period)
       gstScheme: null,
       gstCostBase: null
     },
@@ -267,7 +270,7 @@ export function calculateDraft(conversationId, mode = 'standard') {
     lvrRaw: draft.rawInputs.lvrRaw || String(draft.inputs.lvr ?? draft.assumptions.loanLVRDefault),
     interestRateRaw: draft.rawInputs.interestRateRaw || String(draft.inputs.interestRate ?? draft.assumptions.interestRateDefault),
     timelineRaw: draft.rawInputs.timelineRaw || String(draft.inputs.timelineMonths || 0),
-    sellingCostsRaw: draft.rawInputs.sellingCostsRaw || String(draft.inputs.sellingCostsPercent ?? 3),
+    sellingCostsRaw: draft.rawInputs.sellingCostsRaw || '3%', // Always defaults to 3%
     gstSchemeRaw: draft.rawInputs.gstSchemeRaw || (draft.inputs.gstScheme || 'margin'),
     gstCostBaseRaw: draft.rawInputs.gstCostBaseRaw || String(draft.inputs.gstCostBase || draft.inputs.purchasePrice || 0)
   };
@@ -388,8 +391,8 @@ function checkReadyStatus(draft) {
     draft.inputs[f] !== null && draft.inputs[f] !== undefined
   );
 
-  // Also need LVR, interest rate, selling costs, GST scheme
-  const optional = ['lvr', 'interestRate', 'sellingCostsPercent', 'gstScheme'];
+  // Also need LVR, interest rate, GST scheme (sellingCosts defaults to 3%)
+  const optional = ['lvr', 'interestRate', 'gstScheme'];
   const optionalPresent = optional.every(f =>
     draft.inputs[f] !== null && draft.inputs[f] !== undefined
   );
