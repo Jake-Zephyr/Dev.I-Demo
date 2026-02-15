@@ -808,6 +808,24 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
         }
       },
       {
+        name: 'get_stamped_approved_plans',
+        description: 'Download and analyze the stamped approved architectural plans PDF for a specific development application. Use when user asks for "stamped approved plans", "approved plans", "stamped plans", or wants to see the architectural drawings/unit mix/floor plans for a DA. This searches the DA documents for the stamped approved plans PDF, downloads it, and analyzes it with Claude to extract building overview, unit mix, floor breakdown, parking, and amenities. CRITICAL: Like decision notices, stamped plans show what was APPROVED for a SPECIFIC APPLICATION - they do NOT change the underlying planning scheme controls.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            application_number: {
+              type: 'string',
+              description: 'DA application number (e.g., "MCU/2022/295", "MIN/2024/216"). Must be from a previous DA search result.'
+            },
+            address: {
+              type: 'string',
+              description: 'Property address for context (optional but helpful for user confirmation)'
+            }
+          },
+          required: ['application_number']
+        }
+      },
+      {
         name: 'start_feasibility',
         description: 'Start a feasibility analysis for a property. Use when user explicitly asks to "run a feaso", "do a feasibility", "check the numbers", or similar.',
         input_schema: {
@@ -992,6 +1010,12 @@ DA DECISION NOTICES (Development Approvals):
 - These are project-specific, NOT planning scheme controls
 - A DA approving "45m height" does NOT mean the planning scheme control is "45m"
 - The planning scheme might say "HX", and the DA approved a variation to 45m via impact assessment
+
+STAMPED APPROVED PLANS:
+- Use get_stamped_approved_plans tool when user asks for "stamped approved plans", "approved plans", "stamped plans", or architectural drawings for a DA
+- Like decision notices, these show what was APPROVED for a specific DA, not planning scheme controls
+- Contains architectural details: unit mix, floor plans, parking layout, building dimensions
+- Requires the DA application number from a previous DA search
 
 CORRECT PHRASING:
 ✓ "The site has an HX height control under the City Plan. The DA (MCU/2024/456) approved a 45-metre building via impact assessment."
@@ -1585,6 +1609,108 @@ CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
             application_number: appNumber
           };
           if (sendProgress) sendProgress('⚠️ Document download failed');
+        }
+      }
+
+      // Handle stamped approved plans download tool
+      else if (toolUse.name === 'get_stamped_approved_plans') {
+        if (sendProgress) sendProgress('📐 Downloading stamped approved plans...');
+
+        const appNumber = toolUse.input.application_number;
+
+        try {
+          const { getStampedApprovedPlans } = await import('./pdonline-documents.js');
+          const docResult = await getStampedApprovedPlans(appNumber, '/tmp');
+
+          if (docResult.success) {
+            if (sendProgress) sendProgress('✅ Analyzing stamped approved plans...');
+
+            // Read PDF and analyze with Claude
+            const fs = await import('fs');
+            const pdfBuffer = fs.readFileSync(docResult.filePath);
+            const base64Pdf = pdfBuffer.toString('base64');
+
+            try {
+              const analysisResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 4000,
+                messages: [{
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'document',
+                      source: {
+                        type: 'base64',
+                        media_type: 'application/pdf',
+                        data: base64Pdf
+                      }
+                    },
+                    {
+                      type: 'text',
+                      text: `You are analysing the stamped approved architectural plans for a Gold Coast development application (${appNumber}).
+
+Extract and present in clear markdown:
+1. **Building Overview** – Type, total storeys, overall height, total units
+2. **Unit Mix & Apartment Schedule** – Table with type, bedrooms, bathrooms, levels, size (m²), count
+3. **Floor-by-Floor Breakdown** – Basement, podium, typical tower, top levels
+4. **Parking Summary** – Resident, visitor, total; distribution by level
+5. **Key Amenities** – Pool, gym, communal areas, storage
+6. **Notable Design Features** – Facade materials, penthouse, architectural highlights
+
+Use tables wherever possible. Be factual and precise.
+
+CRITICAL WARNING - DO NOT CONFUSE DA APPROVALS WITH PLANNING CONTROLS:
+- These stamped plans show what was APPROVED for this specific application
+- They do NOT change the underlying planning scheme controls (zone, height, density)
+- Never refer to DA-approved specs as if they're the planning scheme controls`
+                    }
+                  ]
+                }]
+              });
+
+              const summary = analysisResponse.content.find(c => c.type === 'text')?.text || 'Could not analyze document';
+              if (sendProgress) sendProgress('✅ Analysis complete');
+
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                document_name: docResult.documentName,
+                summary: summary
+              };
+            } catch (analysisError) {
+              console.error('[CLAUDE] Stamped plans PDF analysis failed:', analysisError.message);
+              toolResult = {
+                success: true,
+                application_number: appNumber,
+                filename: docResult.filename,
+                file_path: docResult.filePath,
+                file_size_kb: docResult.fileSizeKB,
+                document_name: docResult.documentName,
+                summary: 'PDF analysis failed - document downloaded but could not be analyzed',
+                analysis_error: analysisError.message
+              };
+            }
+          } else {
+            console.error('[CLAUDE] Stamped approved plans download failed:', docResult.error);
+            toolResult = {
+              success: false,
+              error: docResult.error,
+              application_number: appNumber
+            };
+            if (sendProgress) sendProgress('⚠️ Could not find stamped approved plans');
+          }
+        } catch (docError) {
+          console.error('[CLAUDE] Stamped approved plans download error:', docError.message);
+          toolResult = {
+            success: false,
+            error: docError.message,
+            errorType: 'DOCUMENT_DOWNLOAD_FAILED',
+            application_number: appNumber
+          };
+          if (sendProgress) sendProgress('⚠️ Stamped plans download failed');
         }
       }
 
