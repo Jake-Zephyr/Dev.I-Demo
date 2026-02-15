@@ -101,6 +101,69 @@ Every `complete` event from `/api/advise-stream` now includes an optional `feasi
 - `holdingCosts` is auto-recalculated by the backend whenever `purchasePrice`, `constructionCost`, or `timelineMonths` changes
 - `holdingCosts.landTaxAnnual` is computed from QLD land tax brackets based on the purchase price
 
+### 1b. New `calculatorFields` field (calculation complete only)
+
+When the feasibility calculation completes (i.e., `calculate_quick_feasibility` runs), the response also includes a `calculatorFields` object. This is a **flat, authoritative mapping** of every form field to its correct value. **The frontend MUST use this to REPLACE all form fields** (not just empty ones) when `status === 'calculated'`.
+
+This eliminates bugs where progressive fill during Q&A placed values in wrong fields due to conversation extraction errors.
+
+```json
+{
+  "type": "complete",
+  "data": {
+    "answer": "QUICK FEASIBILITY ANALYSIS: ...",
+    "calculatorFields": {
+      "propertyAddress": "75 Dixon Street, Coolangatta",
+      "siteArea": "592",
+      "densityCode": "",
+      "heightLimit": "9",
+      "zone": "Township zone",
+      "lotPlan": "1C28543",
+      "purchasePrice": "1500000",
+      "landValue": "1500000",
+      "grvInclGST": "6000000",
+      "constructionCost": "3000000",
+      "lvr": "0",
+      "interestRate": "9",
+      "totalMonths": "14",
+      "agentFeesPercent": "3",
+      "gstScheme": "margin",
+      "gstCostBase": "1500000",
+      "contingencyPercent": "5",
+      "profFeesPercent": "8",
+      "statutoryFeesPercent": "2",
+      "pmFeesPercent": "3",
+      "sellingAgentFeesPercent": "1.5",
+      "marketingPercent": "1.2",
+      "legalSellingPercent": "0.3",
+      "insurancePercent": "0.3",
+      "drawdownProfile": "linear",
+      "targetMarginSmall": "15",
+      "targetMarginLarge": "20",
+      "targetDevMargin": "15",
+      "landTaxAnnual": "19550",
+      "councilRatesAnnual": "5000",
+      "waterRatesAnnual": "1400",
+      "insuranceAnnual": "9450",
+      "totalHoldingAnnual": "35400",
+      "totalHoldingProject": "41300",
+      "leadInMonths": "2",
+      "constructionMonths": "9",
+      "sellingMonths": "3",
+      "loanFee": "0",
+      "financeCosts": "0"
+    },
+    "feasibilityPreFill": { "..." }
+  }
+}
+```
+
+**CRITICAL:** When `calculatorFields` is present, the frontend MUST:
+1. Use `calculatorFields` values for ALL form fields (overwrite, not just fill empty)
+2. This is the authoritative source — it comes from the actual calculation engine
+3. `calculatorFields` is `null` when no calculation has run yet (during progressive Q&A)
+4. All values are strings (ready for form input fields)
+
 ### 2. New Backend API Endpoints
 
 The backend now has these endpoints for direct draft management:
@@ -152,17 +215,29 @@ const response = await fetch(`${API_BASE_URL}/api/advise-stream`, {
 });
 ```
 
-### Change 2: Extract `feasibilityPreFill` from SSE responses
+### Change 2: Extract `feasibilityPreFill` AND `calculatorFields` from SSE responses
 
-When processing the `complete` event from the SSE stream, extract the `feasibilityPreFill`:
+When processing the `complete` event from the SSE stream, extract both:
 
 ```typescript
 if (event.type === 'complete') {
   const response = event.data;
 
-  // Extract pre-fill data for the calculator
+  // Extract pre-fill data for the calculator (progressive fill during Q&A)
   if (response.feasibilityPreFill) {
     setFeasibilityPreFill(response.feasibilityPreFill);
+  }
+
+  // CRITICAL: When calculatorFields is present, use it to REPLACE all form fields.
+  // This is the authoritative mapping from the calculation engine — it overrides
+  // any values set during progressive fill (which may have been wrong).
+  if (response.calculatorFields) {
+    setCalculatorFields(response.calculatorFields);
+    // Apply calculatorFields to form state (OVERWRITE, not just fill empty)
+    setInputs(prev => ({
+      ...prev,
+      ...response.calculatorFields
+    }));
   }
 
   // ... existing response handling
