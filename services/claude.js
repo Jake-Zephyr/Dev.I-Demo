@@ -888,23 +888,26 @@ export async function getAdvisory(userQuery, conversationHistory = [], sendProgr
 CRITICAL: Copy the user's EXACT words into the Raw fields. Do NOT convert numbers.
 Example: User said "$10M" → purchasePriceRaw: "$10M" (not 10000000)
 Example: User said "$45m" → grvRaw: "$45m" (not 45000000)
-Example: User said "80%" → lvrRaw: "80%" (not 80)`,
+Example: User said "80%" → lvrRaw: "80%" (not 80)
+
+SELLING COSTS: Always pass "3%" — this is a fixed assumption, never ask the user.
+INTEREST RATE: If LVR is 0% (self funded), pass "0" for interestRateRaw.`,
   input_schema: {
     type: 'object',
     properties: {
       propertyAddress: { type: 'string', description: 'Property address from conversation context' },
       purchasePriceRaw: { type: 'string', description: 'EXACT user input for purchase price. e.g. "$10M", "$5,000,000", "5 million"' },
-      grvRaw: { type: 'string', description: 'EXACT user input for GRV. e.g. "$45M", "$12,333,333", "70 million"' },
-      constructionCostRaw: { type: 'string', description: 'EXACT user input for construction cost. e.g. "$10M", "$10,000,000"' },
-      lvrRaw: { type: 'string', description: 'EXACT user input for LVR (debt percentage). e.g. "80%", "70", "100% debt", "no debt", "fully funded". If user says "100%" or "fully funded 100%" pass exactly that. If user says "no debt" or "cash" pass that.' },
-      interestRateRaw: { type: 'string', description: 'EXACT user input for interest rate. e.g. "8.5", "7.0%", "6.5 percent"' },
+      grvRaw: { type: 'string', description: 'EXACT user input for GRV (inc GST). e.g. "$45M", "$12,333,333", "70 million"' },
+      constructionCostRaw: { type: 'string', description: 'EXACT user input for total construction cost exc GST (lump sum including prof fees, council fees, PM). e.g. "$10M", "$10,000,000". Backend adds 5% contingency automatically.' },
+      lvrRaw: { type: 'string', description: 'EXACT user input for LVR. e.g. "60%", "70%", "100%", "0%" or "self funded" or "no loan"' },
+      interestRateRaw: { type: 'string', description: 'EXACT user input for interest rate. e.g. "7%", "8", "9%", "10". Pass "0" if LVR is 0%.' },
       timelineRaw: { type: 'string', description: 'EXACT user input for timeline. e.g. "18", "24 months", "2 years"' },
-      sellingCostsRaw: { type: 'string', description: 'EXACT user input for selling costs. e.g. "3%", "4"' },
+      sellingCostsRaw: { type: 'string', description: 'Fixed at "3%" — do not ask user. Always pass "3%".' },
       gstSchemeRaw: { type: 'string', description: 'EXACT user input for GST. e.g. "margin scheme", "fully taxed"' },
-      gstCostBaseRaw: { type: 'string', description: 'EXACT user input for GST cost base. e.g. "same as acquisition", "$5M"' },
+      gstCostBaseRaw: { type: 'string', description: 'EXACT user input for GST cost base (only if margin scheme). e.g. "same as acquisition", "$5M"' },
       mode: { type: 'string', enum: ['standard', 'residual'], description: 'standard = full feasibility with land price. residual = calculate max land price.' }
     },
-    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'interestRateRaw', 'timelineRaw', 'sellingCostsRaw', 'gstSchemeRaw']
+    required: ['purchasePriceRaw', 'grvRaw', 'constructionCostRaw', 'lvrRaw', 'timelineRaw', 'gstSchemeRaw']
   }
 }
     ];
@@ -1143,10 +1146,13 @@ CONTEXT AWARENESS:
 ${contextSummary}
 
 QUICK FEASIBILITY FLOW:
-When user chooses quick feasibility, collect inputs step by step. NEVER assume values for these critical inputs - ALWAYS ask (in no particular order, dont be rigid with the  structure, keep conversation):
+When user chooses quick feasibility, collect inputs step by step. Keep it conversational, one question per message.
 
-Step 1: Purchase price / Land value
-"What's the site acquisition cost (purchase price)? For example: '$5M' or '$2,500/sqm'"
+AUTO-FILL PROPERTY DATA:
+If the user has already looked up a property in this conversation, automatically use that property's address, site area, density code, and height limit — do NOT ask for these again. Mention it briefly: "I'll use the property data from [address] we looked up earlier."
+
+STEP 1: Land acquisition cost
+"What's the site acquisition cost (purchase price)?"
 
 ACCEPTING USER VARIATIONS:
 - "$5M" / "$5,000,000" / "5 million" → Accept as land value
@@ -1154,102 +1160,94 @@ ACCEPTING USER VARIATIONS:
 - "I already own it" / "already purchased" → Ask: "What was the purchase price?"
 - If user doesn't know: Use residual land value approach (calculate after getting other inputs)
 
-Step 2: GRV (Gross Realisation Value)
-"What's your target gross revenue (GRV)? For example: '$10M total' or '$5,000/sqm'"
+STEP 2: GRV (Gross Realisation Value inc GST)
+"What's your target GRV (gross realisation value) including GST?"
 
-CRITICAL - USER CAN SKIP UNIT MIX:
-- If user provides total GRV (e.g., "$10M"), you don't need unit count or sizes
-- Only ask for unit mix if user provides $/sqm rate (you'll need saleable area to calculate total)
-- For the calculation tool:
-  * If total GRV provided: use numUnits = 1, saleableArea = 1, grvTotal = their amount
-  * If $/sqm provided: ask for saleable area, then calculate grvTotal = rate × area
+- If user provides total GRV (e.g., "$10M"), accept it directly
+- Only ask for unit mix if user provides $/sqm rate (you'll need saleable area)
+- If $/sqm provided: ask for saleable area, then calculate grvTotal = rate × area
 
-Step 3: Construction cost - NEVER ASSUME THIS
-"What's your total construction cost including professional fees, statutory fees, and contingency?"
-DO NOT suggest a $/sqm rate unless user explicitly asks for market rates. Wait for user to provide their number.
+STEP 3: Construction costs (exc GST)
+"What's your total construction cost excluding GST? This should include professional fees, council fees & charges, and project management. I'll add 5% contingency on top."
+DO NOT suggest a $/sqm rate unless user explicitly asks. Wait for user to provide their number.
+The backend automatically adds 5% contingency — the user provides their all-in cost exc contingency.
 
-CRITICAL - HANDLING GROSS VS NET FLOOR AREA:
-- If user says they're building at "$8k/sqm on gross not net", they mean:
-  * Gross floor area INCLUDES common areas, lifts, basement, circulation (typically 25-35% of total)
-  * Net saleable area is SMALLER than gross (usually 65-75% of gross)
-- Ask: "So construction is $X per sqm of GROSS floor area. What's the total gross floor area including common areas?"
-- Then calculate: Construction cost = gross floor area × $/sqm rate
-- NEVER multiply net saleable area by a gross $/sqm rate - that's wrong!
+HANDLING GROSS VS NET FLOOR AREA:
+- If user says "$8k/sqm on gross", ask for total gross floor area
+- Construction cost = gross floor area × $/sqm rate
+- NEVER multiply net saleable by a gross $/sqm rate
 
-Step 4: Finance inputs - ASK ONE QUESTION AT A TIME
-"LVR (Loan to Value Ratio)? [60%] [70%] [80%] [Fully funded]"
-Then after they answer:
-"Interest rate? [6.5%] [7.0%] [7.5%] [Custom]"
-Then after they answer:
-"Project timeline in months?" (text input - user types number)
-
-Step 5: Other costs - ASK ONE QUESTION AT A TIME
-"Selling costs (agent + marketing)? [3%] [4%] [Custom]"
-Then after they answer:
+STEP 4: GST treatment
 "GST treatment? [Margin scheme] [Fully taxed]"
+- If user selects [Margin scheme], immediately ask: "What's the cost base for margin scheme purposes? [Same as acquisition cost] [Different cost base]"
+  * [Same as acquisition cost] → use land value as GST cost base
+  * [Different cost base] → ask: "What is the cost base amount?"
+
+STEP 5: Project timeline
+"Project timeline in months?"
+
+STEP 6: Finance — LVR
+"LVR (Loan to Value Ratio)? [0% (self funded)] [60%] [70%] [100% (fully funded)] [Other]"
+
+STEP 6b: Finance — Interest rate (ONLY IF LVR > 0%)
+If user selected 0% / self funded / no loan → SKIP this question entirely. Pass interestRateRaw: "0".
+Otherwise ask: "Interest rate? [7%] [8%] [9%] [10%] [Other]"
+- If user clicks [Other], ask: "What interest rate?"
+
+SELLING COSTS: DO NOT ASK. Fixed at 3% (agent fees + marketing + legal). Always pass sellingCostsRaw: "3%".
+SELL ON COMPLETION: Assumed. Selling period = 0 months. Do not ask about selling timeline.
 
 CRITICAL - BUTTON FORMAT RULES:
 - Multiple choice options MUST be in square brackets like [Option 1] [Option 2] [Option 3]
-- The frontend will detect [text] patterns and render them as clickable buttons
-- ALWAYS use brackets for GST question: "GST treatment? [Margin scheme] [Fully taxed]"
-- NEVER format as a list without brackets:
-  * WRONG: "GST treatment:\n- Margin scheme\n- Fully taxed"
-  * CORRECT: "GST treatment? [Margin scheme] [Fully taxed]"
-- If user clicks [Custom] for interest rate or selling costs, then ask for their custom value
-- If user selects [Margin scheme] for GST, immediately ask: "What is the project's cost base for Margin Scheme purposes? [Same as acquisition cost] [Different cost base]"
-  * If they click [Same as acquisition cost], use the land value/purchase price as the GST cost base
-  * If they click [Different cost base], ask: "What is the cost base amount?"
+- The frontend renders [text] patterns as clickable buttons
 - Always present button options on the SAME LINE as the question
-- Example: "LVR? [60%] [70%] [80%] [Fully funded]" (all on one line)
+- Example: "LVR? [0% (self funded)] [60%] [70%] [100% (fully funded)] [Other]"
+- NEVER format as a list without brackets
 
 CRITICAL - VALIDATING USER RESPONSES TO BUTTON QUESTIONS:
-- If you ask a button question and user's answer doesn't match ANY option, use ask_clarification
-- Examples:
-  * Asked: "LVR? [60%] [70%] [80%] [Fully funded]"
-  * User says: "apartments" → WRONG, use ask_clarification: "I need to know your LVR - 60%, 70%, 80%, or fully funded?"
-  * User says: "yes" → WRONG, use ask_clarification: "Which LVR - 60%, 70%, 80%, or fully funded?"
+- If user's answer doesn't match ANY option, use ask_clarification
 - Accept close variations:
-  * "fully funded" / "full fund" / "100%" / "100% lvr" → Accept as [Fully funded]
-  * "6.5" / "6.5%" → Accept as [6.5%]
-  * "three percent" / "3" → Accept as [3%]
+  * "self funded" / "no loan" / "cash" / "0%" → 0% LVR
+  * "fully funded" / "100%" / "full debt" → 100% LVR
+  * "7" / "7%" → Accept as 7%
 
-CALLING THE TOOL - HOW TO PASS INPUTS:
+CALLING THE TOOL:
+When you have ALL required inputs, call calculate_quick_feasibility immediately.
+Pass EXACTLY what the user typed as raw strings. Always pass sellingCostsRaw: "3%".
+If LVR is 0%, pass interestRateRaw: "0".
 
-When you have ALL required inputs, call calculate_quick_feasibility.
-Pass EXACTLY what the user typed as raw strings. DO NOT convert to numbers.
-
-Example: User said "$10M" for land, "$45m" for GRV, "$10,000,000" for construction:
+Example tool call:
 {
   propertyAddress: "247 Hedges Avenue, Mermaid Beach",
   purchasePriceRaw: "$10M",
   grvRaw: "$45m",
   constructionCostRaw: "$10,000,000",
-  lvrRaw: "80%",
-  interestRateRaw: "8.5",
+  lvrRaw: "70%",
+  interestRateRaw: "8%",
   timelineRaw: "18",
   sellingCostsRaw: "3%",
   gstSchemeRaw: "margin scheme",
   gstCostBaseRaw: "same as acquisition"
 }
 
-The backend handles ALL parsing and calculation. It returns a complete pre-formatted response.
-Your ONLY job after calling the tool: display the formattedResponse from the tool result VERBATIM.
-Do NOT add to it, modify it, or recalculate anything. Just output it exactly as received.
+The backend handles ALL parsing and calculation. It returns a pre-formatted response.
+Your ONLY job after calling the tool: display the formattedResponse VERBATIM.
+Do NOT add to it, modify it, or recalculate anything.
 
 REQUIRED INPUTS (must collect ALL before calling tool):
 1. Purchase price / Land value
-2. GRV (Gross Realisation Value)
-3. Construction cost (total)
-4. LVR (Loan to Value Ratio)
-5. Interest rate
-6. Timeline in months
-7. Selling costs percentage
-8. GST scheme (and cost base if margin scheme)
+2. GRV (inc GST)
+3. Construction cost (exc GST, lump sum)
+4. GST scheme (and cost base if margin scheme)
+5. Timeline in months
+6. LVR
+7. Interest rate (only if LVR > 0%)
 
 RULES:
-- NEVER assume construction costs, LVR, interest rate, or timeline - always ask
+- NEVER assume construction costs, LVR, or timeline - always ask
+- Selling costs are ALWAYS 3% - never ask
 - One question per message
-- Accept variations: "fully funded" = 0% LVR, "18 months" = "18mo" = "18"
+- Accept variations: "self funded" = 0% LVR, "18 months" = "18mo" = "18"
 - If user says "margin" for GST, that means margin scheme
 - When you have all inputs, call the tool immediately
 - NEVER ask the same question twice
@@ -1819,9 +1817,11 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
             profFeesPercent: String(defaults.profFeesPercent),
             statutoryFeesPercent: String(defaults.statutoryFeesPercent),
             pmFeesPercent: String(defaults.pmFeesPercent),
+            sellingCostsPercent: String(calc.inputs.sellingCostsPercent || defaults.sellingCostsPercent || 3),
             sellingAgentFeesPercent: String(defaults.agentFeesPercent),
             marketingPercent: String(defaults.marketingPercent),
             legalSellingPercent: String(defaults.legalSellingPercent),
+            sellOnCompletion: 'true',   // Always sell on completion
             insurancePercent: String(defaults.insurancePercent),
             drawdownProfile: defaults.drawdownProfile,
             targetMarginSmall: String(defaults.targetDevMarginSmall),
@@ -1839,7 +1839,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
             // --- Timeline breakdown ---
             leadInMonths: String(calc.timeline?.leadIn || 0),
             constructionMonths: String(calc.timeline?.construction || 0),
-            sellingMonths: String(calc.timeline?.selling || 0),
+            sellingMonths: '0',   // Sell on completion — 0 month selling period
 
             // --- Finance ---
             loanFee: String(calc.costs?.loanFee || 0),
