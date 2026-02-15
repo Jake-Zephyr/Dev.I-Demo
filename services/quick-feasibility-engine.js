@@ -688,6 +688,52 @@ This means if you can acquire the site for less than ${fmtCurrency(residual.resi
  * 3. Use label-anchored matching (not position-based)
  * 4. Latest answer wins for each field
  */
+/**
+ * Extract only the QUESTION portion of an assistant message, stripping confirmation text.
+ *
+ * Problem: Assistant messages often echo the previous answer before asking the next question:
+ *   "Got it - $1,500,000 acquisition cost. What's your target gross revenue (GRV)?"
+ *   "Perfect - 9% interest rate. Project timeline in months?"
+ *
+ * The confirmation text contains keywords (like "acquisition cost", "interest rate") that
+ * would false-match the NEXT user answer to the WRONG field. This function strips the
+ * confirmation portion and returns only the actual question.
+ *
+ * Strategy: Find the last '?' in the message, then walk backwards to find the start of
+ * that sentence (after '.', '!', or newline). Returns just the question sentence.
+ */
+function getQuestionPortion(text) {
+  const lower = text.toLowerCase();
+
+  // Find the last question mark
+  const questionIdx = lower.lastIndexOf('?');
+  if (questionIdx > 0) {
+    // Walk backwards from '?' to find the start of the question sentence
+    let start = questionIdx;
+    while (start > 0) {
+      start--;
+      const ch = lower[start];
+      if (ch === '.' || ch === '!' || ch === '\n') {
+        start++; // Move past the boundary character
+        break;
+      }
+    }
+    const questionSentence = lower.substring(start, questionIdx + 1).trim();
+    // Only return if we got something meaningful (not just "?")
+    if (questionSentence.length > 3) {
+      return questionSentence;
+    }
+  }
+
+  // No question mark found — fallback: use the last sentence
+  const parts = lower.split(/[.!]\s+|\n+/).filter(p => p.trim().length > 3);
+  if (parts.length > 1) {
+    return parts[parts.length - 1].trim();
+  }
+
+  return lower;
+}
+
 export function extractInputsFromConversation(conversationHistory) {
   if (!conversationHistory || conversationHistory.length === 0) {
     return null;
@@ -739,7 +785,13 @@ export function extractInputsFromConversation(conversationHistory) {
     // We only care about assistant question → user answer pairs
     if (msg.role !== 'assistant' || nextMsg.role !== 'user') continue;
 
-    const question = String(msg.content || '').toLowerCase();
+    // CRITICAL FIX: Use only the QUESTION portion of the assistant message.
+    // This prevents confirmation text like "Got it - $1.5M acquisition cost."
+    // from false-matching the next user answer to the wrong field.
+    // Example: "Perfect - 9% interest rate. Project timeline in months?"
+    //   Full message contains "interest rate" → would false-match timeline answer "14" as interest rate
+    //   Question portion: "project timeline in months?" → correctly matches timeline only
+    const question = getQuestionPortion(String(msg.content || ''));
     const answer = String(nextMsg.content || '').trim();
 
     // Skip empty answers

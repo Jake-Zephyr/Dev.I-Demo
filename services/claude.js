@@ -264,9 +264,16 @@ function extractConversationContext(conversationHistory) {
     }
 
     if (!heightLocked) {
-      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*(?:height|tall)/i);
+      // Match both "9m height" AND "Maximum height: 9 metres" / "height limit: 12m"
+      const heightMatch = content.match(/(\d+)\s*m(?:etre)?s?\s*(?:height|tall)/i) ||
+        content.match(/(?:height|height\s*limit)\s*(?::|is|of|=)\s*(\d+)\s*m/i) ||
+        content.match(/(?:maximum|max)\s+height\s*(?::|is|of|=)\s*(\d+)\s*m/i);
       if (heightMatch && !context.lastHeight) {
-        context.lastHeight = `${heightMatch[1]}m`;
+        // The match group index depends on which regex matched
+        const heightVal = heightMatch[1] || heightMatch[2];
+        if (heightVal) {
+          context.lastHeight = `${heightVal}m`;
+        }
       }
     }
 
@@ -481,6 +488,9 @@ function buildFeasibilityPreFill(conversationHistory, conversationContext, conve
   }
 
   // Extract inputs from conversation and patch into draft
+  // SAFETY: Only patch fields that are still null in the draft.
+  // This prevents conversation extraction errors from overwriting correct values
+  // that were already set by a previous progressive fill step.
   const extracted = extractInputsFromConversation(conversationHistory);
   if (extracted) {
     const inputPatch = {};
@@ -500,10 +510,16 @@ function buildFeasibilityPreFill(conversationHistory, conversationContext, conve
 
     for (const [rawKey, parsedKey] of Object.entries(fieldMap)) {
       if (extracted[rawKey]) {
-        rawPatch[rawKey] = extracted[rawKey];
+        const existingValue = draft.inputs[parsedKey];
+        const existingRaw = draft.rawInputs[rawKey];
         const parsedValue = parseInputValue(parsedKey, extracted[rawKey]);
-        if (parsedValue !== null && parsedValue !== undefined) {
-          inputPatch[parsedKey] = parsedValue;
+
+        // Only patch if: field is empty, OR the raw value changed (genuine new answer)
+        if (existingValue === null || existingValue === undefined || extracted[rawKey] !== existingRaw) {
+          rawPatch[rawKey] = extracted[rawKey];
+          if (parsedValue !== null && parsedValue !== undefined) {
+            inputPatch[parsedKey] = parsedValue;
+          }
         }
       }
     }
@@ -1767,6 +1783,71 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
         // Include draft for progressive panel fill
         const feasoDraft = conversationId ? getDraft(conversationId) : null;
 
+        // ============================================================
+        // BUILD CALCULATOR FIELDS — authoritative, flat field mapping
+        // The frontend should use this to REPLACE all form fields when
+        // status === 'calculated'. This eliminates field mapping bugs
+        // caused by progressive fill or name mismatches.
+        // ============================================================
+        let calculatorFields = null;
+        if (toolResult.success && toolResult.calculationData && feasoDraft) {
+          const calc = toolResult.calculationData;
+          const defaults = getDefaultAssumptions();
+          calculatorFields = {
+            // --- Property fields ---
+            propertyAddress: feasoDraft.property.address || '',
+            siteArea: feasoDraft.property.siteAreaSqm ? String(feasoDraft.property.siteAreaSqm) : '',
+            densityCode: feasoDraft.property.density || '',
+            heightLimit: feasoDraft.property.heightM ? String(feasoDraft.property.heightM) : '',
+            zone: feasoDraft.property.zone || '',
+            lotPlan: feasoDraft.property.lotPlan || '',
+
+            // --- Core inputs (from calculation — authoritative values) ---
+            purchasePrice: String(calc.inputs.landValue || 0),
+            landValue: String(calc.inputs.landValue || 0),
+            grvInclGST: String(calc.inputs.grvTotal || 0),
+            constructionCost: String(calc.inputs.constructionCost || 0),
+            lvr: String(calc.inputs.lvr ?? 0),
+            interestRate: String(calc.inputs.interestRate ?? 0),
+            totalMonths: String(calc.inputs.timelineMonths || 0),
+            agentFeesPercent: String(calc.inputs.sellingCostsPercent || 3),
+            gstScheme: calc.inputs.gstScheme || 'margin',
+            gstCostBase: String(calc.inputs.gstCostBase || 0),
+
+            // --- Assumptions (defaults — always populated) ---
+            contingencyPercent: String(calc.inputs.appliedContingency ?? defaults.contingencyPercent),
+            profFeesPercent: String(defaults.profFeesPercent),
+            statutoryFeesPercent: String(defaults.statutoryFeesPercent),
+            pmFeesPercent: String(defaults.pmFeesPercent),
+            sellingAgentFeesPercent: String(defaults.agentFeesPercent),
+            marketingPercent: String(defaults.marketingPercent),
+            legalSellingPercent: String(defaults.legalSellingPercent),
+            insurancePercent: String(defaults.insurancePercent),
+            drawdownProfile: defaults.drawdownProfile,
+            targetMarginSmall: String(defaults.targetDevMarginSmall),
+            targetMarginLarge: String(defaults.targetDevMarginLarge),
+            targetDevMargin: String(calc.profitability.targetMargin),
+
+            // --- Holding costs (auto-calculated) ---
+            landTaxAnnual: String(calc.holdingBreakdown?.landTaxYearly || feasoDraft.holdingCosts?.landTaxAnnual || 0),
+            councilRatesAnnual: String(calc.holdingBreakdown?.councilRatesAnnual || defaults.councilRatesAnnual),
+            waterRatesAnnual: String(calc.holdingBreakdown?.waterRatesAnnual || defaults.waterRatesAnnual),
+            insuranceAnnual: String(calc.holdingBreakdown?.insuranceAnnual || 0),
+            totalHoldingAnnual: String(calc.holdingBreakdown?.totalYearly || 0),
+            totalHoldingProject: String(calc.costs?.holding || 0),
+
+            // --- Timeline breakdown ---
+            leadInMonths: String(calc.timeline?.leadIn || 0),
+            constructionMonths: String(calc.timeline?.construction || 0),
+            sellingMonths: String(calc.timeline?.selling || 0),
+
+            // --- Finance ---
+            loanFee: String(calc.costs?.loanFee || 0),
+            financeCosts: String(calc.costs?.finance || 0)
+          };
+          console.log('[FEASO] Built calculatorFields for frontend');
+        }
+
         return {
           answer: toolResult.formattedResponse,
           propertyData: null,
@@ -1777,6 +1858,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
             parsedInputs: toolResult.parsedInputs
           },
           feasibilityPreFill: feasoDraft,
+          calculatorFields: calculatorFields,
           buttonOptions: buttonOptions,
           questionContext: questionContext,
           usedTool: true,
@@ -1886,6 +1968,54 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
             const fQuestionContext = fButtonOptions ? detectQuestionContext(fResult.formattedResponse, fButtonOptions) : null;
             const feasoDraft = conversationId ? getDraft(conversationId) : null;
 
+            // Build calculatorFields for follow-up path too
+            let fCalcFields = null;
+            if (fResult.calculationData && feasoDraft) {
+              const fCalc = fResult.calculationData;
+              const fDefaults = getDefaultAssumptions();
+              fCalcFields = {
+                propertyAddress: feasoDraft.property.address || '',
+                siteArea: feasoDraft.property.siteAreaSqm ? String(feasoDraft.property.siteAreaSqm) : '',
+                densityCode: feasoDraft.property.density || '',
+                heightLimit: feasoDraft.property.heightM ? String(feasoDraft.property.heightM) : '',
+                zone: feasoDraft.property.zone || '',
+                lotPlan: feasoDraft.property.lotPlan || '',
+                purchasePrice: String(fCalc.inputs.landValue || 0),
+                landValue: String(fCalc.inputs.landValue || 0),
+                grvInclGST: String(fCalc.inputs.grvTotal || 0),
+                constructionCost: String(fCalc.inputs.constructionCost || 0),
+                lvr: String(fCalc.inputs.lvr ?? 0),
+                interestRate: String(fCalc.inputs.interestRate ?? 0),
+                totalMonths: String(fCalc.inputs.timelineMonths || 0),
+                agentFeesPercent: String(fCalc.inputs.sellingCostsPercent || 3),
+                gstScheme: fCalc.inputs.gstScheme || 'margin',
+                gstCostBase: String(fCalc.inputs.gstCostBase || 0),
+                contingencyPercent: String(fCalc.inputs.appliedContingency ?? fDefaults.contingencyPercent),
+                profFeesPercent: String(fDefaults.profFeesPercent),
+                statutoryFeesPercent: String(fDefaults.statutoryFeesPercent),
+                pmFeesPercent: String(fDefaults.pmFeesPercent),
+                sellingAgentFeesPercent: String(fDefaults.agentFeesPercent),
+                marketingPercent: String(fDefaults.marketingPercent),
+                legalSellingPercent: String(fDefaults.legalSellingPercent),
+                insurancePercent: String(fDefaults.insurancePercent),
+                drawdownProfile: fDefaults.drawdownProfile,
+                targetMarginSmall: String(fDefaults.targetDevMarginSmall),
+                targetMarginLarge: String(fDefaults.targetDevMarginLarge),
+                targetDevMargin: String(fCalc.profitability.targetMargin),
+                landTaxAnnual: String(fCalc.holdingBreakdown?.landTaxYearly || 0),
+                councilRatesAnnual: String(fCalc.holdingBreakdown?.councilRatesAnnual || fDefaults.councilRatesAnnual),
+                waterRatesAnnual: String(fCalc.holdingBreakdown?.waterRatesAnnual || fDefaults.waterRatesAnnual),
+                insuranceAnnual: String(fCalc.holdingBreakdown?.insuranceAnnual || 0),
+                totalHoldingAnnual: String(fCalc.holdingBreakdown?.totalYearly || 0),
+                totalHoldingProject: String(fCalc.costs?.holding || 0),
+                leadInMonths: String(fCalc.timeline?.leadIn || 0),
+                constructionMonths: String(fCalc.timeline?.construction || 0),
+                sellingMonths: String(fCalc.timeline?.selling || 0),
+                loanFee: String(fCalc.costs?.loanFee || 0),
+                financeCosts: String(fCalc.costs?.finance || 0)
+              };
+            }
+
             return {
               answer: preText + fResult.formattedResponse,
               propertyData: latestPropertyData,
@@ -1896,6 +2026,7 @@ else if (toolUse.name === 'calculate_quick_feasibility') {
                 parsedInputs: fResult.parsedInputs
               },
               feasibilityPreFill: feasoDraft,
+              calculatorFields: fCalcFields,
               buttonOptions: fButtonOptions,
               questionContext: fQuestionContext,
               usedTool: true,
