@@ -332,14 +332,16 @@ export function deleteDraft(conversationId) {
 // ============================================================
 
 /**
- * QLD Land Tax brackets (2025-26 QRO rates)
+ * QLD Land Tax brackets (2025-26 QRO rates, companies/trusts)
  * Matches quick-feasibility-engine.js calculateLandTaxQLD()
+ * Source: https://qro.qld.gov.au/land-tax/calculate/company-trust/
  */
 function calculateLandTaxQLD(landValue) {
-  if (!landValue || landValue <= 350000) return 0;
-  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
-  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
-  return 75000 + (landValue - 5000000) * 0.02;
+  if (!landValue || landValue < 350000) return 0;
+  if (landValue <= 2249999) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 4999999) return 33750 + (landValue - 2250000) * 0.015;
+  if (landValue <= 9999999) return 75000 + (landValue - 5000000) * 0.0225;
+  return 187500 + (landValue - 10000000) * 0.0275;
 }
 
 /**

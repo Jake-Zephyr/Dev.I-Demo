@@ -38,37 +38,47 @@ const QUICK_DEFAULTS = {
 
 /**
  * Calculate stamp duty for QLD
+ * Based on current QLD Revenue Office transfer duty rates (2025-26)
+ * Source: https://qro.qld.gov.au/duties/transfer-duty/calculate/rates/
  */
 function calculateStampDutyQLD(price) {
   if (price <= 5000) return 0;
-  if (price <= 75000) return price * 0.015;
-  if (price <= 540000) return 1125 + (price - 75000) * 0.035;
-  if (price <= 1000000) return 17400 + (price - 540000) * 0.045;
-  return 38100 + (price - 1000000) * 0.0575;
+  if (price <= 75000) return (price - 5000) * 0.015;
+  if (price <= 540000) return 1050 + (price - 75000) * 0.035;
+  if (price <= 1000000) return 17325 + (price - 540000) * 0.045;
+  return 38025 + (price - 1000000) * 0.0575;
 }
 
 /**
  * Calculate land tax for QLD (Companies/Trusts)
- * Updated to current QRO rates (2025-26):
- * - Under $350k: $0
- * - $350k - $2.25M: $1,450 + 1.7% of amount over $350k
- * - $2.25M - $5M: $33,750 + 1.5% of amount over $2.25M
- * - Over $5M: $75,000 + 2.0% of amount over $5M
+ * Updated to current QRO rates (2025-26)
+ * Source: https://qro.qld.gov.au/land-tax/calculate/company-trust/
+ *
+ * Brackets:
+ *   Under $350,000:           Nil
+ *   $350,000 – $2,249,999:    $1,450 + 1.7% of value over $350k
+ *   $2,250,000 – $4,999,999:  $33,750 + 1.5% of value over $2.25M
+ *   $5,000,000 – $9,999,999:  $75,000 + 2.25% of value over $5M
+ *   $10,000,000+:             $187,500 + 2.75% of value over $10M
  */
 export function calculateLandTaxQLD(landValue) {
   if (landValue < 350000) return 0;
-  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
-  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
-  return 75000 + (landValue - 5000000) * 0.02;
+  if (landValue <= 2249999) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 4999999) return 33750 + (landValue - 2250000) * 0.015;
+  if (landValue <= 9999999) return 75000 + (landValue - 5000000) * 0.0225;
+  return 187500 + (landValue - 10000000) * 0.0275;
 }
 
 /**
- * Calculate target margin based on GRV
- * - GRV under $15M → assume 15%
- * - GRV $15M or above → assume 20%
+ * Calculate target margin based on GRV (graduated scale)
+ *   GRV < $10M   → 15%
+ *   $10M – $20M  → 15% to 20% (linear interpolation)
+ *   GRV > $20M   → 20%
  */
 export function calculateTargetMargin(grvExclGST) {
-  return grvExclGST < 15000000 ? 15 : 20;
+  if (grvExclGST <= 10000000) return 15;
+  if (grvExclGST >= 20000000) return 20;
+  return Math.round((15 + ((grvExclGST - 10000000) / 10000000) * 5) * 10) / 10;
 }
 
 /**

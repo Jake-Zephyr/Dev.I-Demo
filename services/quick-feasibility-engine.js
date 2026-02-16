@@ -245,35 +245,59 @@ export function parseAllInputs(rawInputs) {
 /**
  * QLD Stamp Duty calculation (commercial/investment property)
  * Based on current QLD Revenue Office transfer duty rates (2025-26)
- * Source: https://www.qld.gov.au/housing/buying-owning-home/transfer-duty
+ * Source: https://qro.qld.gov.au/duties/transfer-duty/calculate/rates/
+ *
+ * Brackets:
+ *   $0 – $5,000:       Nil
+ *   $5,001 – $75,000:  $0 + 1.5% of value over $5,000    (cumulative at $75k = $1,050)
+ *   $75,001 – $540,000: $1,050 + 3.5% of value over $75k  (cumulative at $540k = $17,325)
+ *   $540,001 – $1,000,000: $17,325 + 4.5% of value over $540k (cumulative at $1M = $38,025)
+ *   Over $1,000,000:   $38,025 + 5.75% of value over $1M
  */
 function calculateStampDutyQLD(value) {
   if (value <= 5000) return 0;
-  if (value <= 75000) return value * 0.015;
-  if (value <= 540000) return 1125 + (value - 75000) * 0.035;
-  if (value <= 1000000) return 17400 + (value - 540000) * 0.045;
-  return 38100 + (value - 1000000) * 0.0575;
+  if (value <= 75000) return (value - 5000) * 0.015;
+  if (value <= 540000) return 1050 + (value - 75000) * 0.035;
+  if (value <= 1000000) return 17325 + (value - 540000) * 0.045;
+  return 38025 + (value - 1000000) * 0.0575;
 }
 
 /**
  * QLD Land Tax calculation (company/trust rate)
  * Updated to current QRO rates (2025-26)
- * Source: https://www.qld.gov.au/environment/land/tax/calculation
+ * Source: https://qro.qld.gov.au/land-tax/calculate/company-trust/
+ *
+ * Brackets (companies/trusts):
+ *   Under $350,000:           Nil
+ *   $350,000 – $2,249,999:    $1,450 + 1.7% of value over $350k
+ *   $2,250,000 – $4,999,999:  $33,750 + 1.5% of value over $2.25M
+ *   $5,000,000 – $9,999,999:  $75,000 + 2.25% of value over $5M
+ *   $10,000,000+:             $187,500 + 2.75% of value over $10M
  */
 function calculateLandTaxQLD(landValue) {
-  if (landValue <= 350000) return 0;
-  if (landValue <= 2250000) return 1450 + (landValue - 350000) * 0.017;
-  if (landValue <= 5000000) return 33750 + (landValue - 2250000) * 0.015;
-  return 75000 + (landValue - 5000000) * 0.02;
+  if (landValue < 350000) return 0;
+  if (landValue <= 2249999) return 1450 + (landValue - 350000) * 0.017;
+  if (landValue <= 4999999) return 33750 + (landValue - 2250000) * 0.015;
+  if (landValue <= 9999999) return 75000 + (landValue - 5000000) * 0.0225;
+  return 187500 + (landValue - 10000000) * 0.0275;
 }
 
 /**
- * Target margin based on GRV
- * < $15M GRV = 15% target
- * >= $15M GRV = 20% target
+ * Target margin based on GRV (graduated scale)
+ *
+ * Replaces the old step function ($15M cliff) with linear interpolation:
+ *   GRV < $10M   → 15%
+ *   $10M – $20M  → 15% to 20% (linear interpolation)
+ *   GRV > $20M   → 20%
+ *
+ * This avoids the cliff edge where a $14.99M project would get 15% target
+ * but a $15.01M project would jump to 20%.
  */
 function calculateTargetMargin(grvExclGST) {
-  return grvExclGST < 15_000_000 ? 15 : 20;
+  if (grvExclGST <= 10_000_000) return 15;
+  if (grvExclGST >= 20_000_000) return 20;
+  // Linear interpolation between $10M (15%) and $20M (20%)
+  return Math.round((15 + ((grvExclGST - 10_000_000) / 10_000_000) * 5) * 10) / 10;
 }
 
 /**
@@ -392,7 +416,9 @@ export function calculateFeasibility(inputs) {
   const targetProfit = grvExclGST * (targetMarginPercent / 100);
   let residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - targetProfit;
   // Iterate to converge (finance and holding costs depend on land value)
-  for (let i = 0; i < 8; i++) {
+  // Uses up to 20 iterations with convergence check (within $100)
+  let prevResidual = 0;
+  for (let i = 0; i < 20; i++) {
     const resStampDuty = calculateStampDutyQLD(residualLandValue);
     const resLegal = Math.round(residualLandValue * 0.005);
     const resLandDebt = residualLandValue * lvrDecimal;
@@ -402,6 +428,8 @@ export function calculateFeasibility(inputs) {
     const resLandTax = calculateLandTaxQLD(residualLandValue);
     const resHolding = Math.round((resLandTax + councilRatesAnnual + waterRatesAnnual + insuranceAnnual) * (timelineMonths / 12));
     residualLandValue = grvExclGST - constructionWithContingency - sellingCosts - resFinance - resLoanFee - resHolding - resStampDuty - resLegal - targetProfit;
+    if (Math.abs(residualLandValue - prevResidual) < 100) break; // Converged within $100
+    prevResidual = residualLandValue;
   }
   residualLandValue = Math.round(Math.max(0, residualLandValue));
 
@@ -608,7 +636,7 @@ Profitability:
 • Gross Profit: ${fmtFull(profitability.grossProfit)}
 • Profit Margin (on revenue): ${profitability.profitMargin.toFixed(1)}%
 • Profit on Cost: ${profitability.profitOnCost.toFixed(1)}%
-• Target Margin: ${profitability.targetMargin}% (${revenue.grvExclGST < 15_000_000 ? 'GRV under $15M' : 'GRV $15M+'})
+• Target Margin: ${profitability.targetMargin}% (based on GRV ${fmtCurrency(revenue.grvExclGST)} exc GST)
 • Status: ${profitability.viabilityLabel} ${viabilityEmoji}
 
 ${residualSection}
@@ -619,7 +647,7 @@ Assumptions:
 • Sell on completion assumed (0 month selling period)
 • Finance Draw: Land at settlement + construction drawn progressively (~50% avg)
 • Holding Costs: Land tax ${fmtFull(holdingBreakdown.landTaxYearly)}/yr + council rates $${holdingBreakdown.councilRatesAnnual.toLocaleString()}/yr + water $${holdingBreakdown.waterRatesAnnual.toLocaleString()}/yr
-• Stamp Duty: QLD rates for investment/commercial property
+• Stamp Duty: QLD transfer duty rates (2025-26 FY, investment/commercial)
 
 ${commentary}
 
