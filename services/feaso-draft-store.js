@@ -36,8 +36,9 @@ export function getDefaultAssumptions() {
     waterRatesAnnual: 1400,
     insurancePercent: 0.3,        // % of construction cost per year
     drawdownProfile: 'linear',
-    targetDevMarginSmall: 15,     // GRV < $15M
-    targetDevMarginLarge: 20      // GRV >= $15M
+    targetDevMarginSmall: 20,     // GRV < $5M (small projects, higher risk)
+    targetDevMarginMid: 18,       // GRV $5M-$20M (mid-range)
+    targetDevMarginLarge: 15      // GRV >= $20M (larger projects, economies of scale)
   };
 }
 

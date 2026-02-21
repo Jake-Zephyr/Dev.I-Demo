@@ -268,12 +268,16 @@ function calculateLandTaxQLD(landValue) {
 }
 
 /**
- * Target margin based on GRV
- * < $15M GRV = 15% target
- * >= $15M GRV = 20% target
+ * Target margin based on project scale (GRV exc GST)
+ * Smaller projects need higher margins to justify risk
+ * < $5M GRV = 20% target (small projects, higher risk)
+ * $5M-$20M GRV = 18% target (mid-range)
+ * >= $20M GRV = 15% target (larger projects, economies of scale)
  */
 function calculateTargetMargin(grvExclGST) {
-  return grvExclGST < 15_000_000 ? 15 : 20;
+  if (grvExclGST < 5_000_000) return 20;
+  if (grvExclGST < 20_000_000) return 18;
+  return 15;
 }
 
 /**
@@ -608,7 +612,7 @@ Profitability:
 • Gross Profit: ${fmtFull(profitability.grossProfit)}
 • Profit Margin (on revenue): ${profitability.profitMargin.toFixed(1)}%
 • Profit on Cost: ${profitability.profitOnCost.toFixed(1)}%
-• Target Margin: ${profitability.targetMargin}% (${revenue.grvExclGST < 15_000_000 ? 'GRV under $15M' : 'GRV $15M+'})
+• Target Margin: ${profitability.targetMargin}% (${revenue.grvExclGST < 5_000_000 ? 'GRV under $5M' : revenue.grvExclGST < 20_000_000 ? 'GRV $5M-$20M' : 'GRV $20M+'})
 • Status: ${profitability.viabilityLabel} ${viabilityEmoji}
 
 ${residualSection}
